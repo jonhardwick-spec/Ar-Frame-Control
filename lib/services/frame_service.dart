@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:frame_sdk/frame_sdk.dart' as frame_sdk;
 import 'package:frame_sdk/bluetooth.dart' as frame_sdk_ble;
@@ -15,9 +16,11 @@ class FrameService {
   bool _isConnected = false;
   final StorageService? storageService;
   static const int _maxRetries = 5;
+  static const int _connectTimeoutSeconds = 20;
 
   FrameService({this.storageService}) {
     _log.info('frame service constructor called');
+    print('FrameService initialized'); // Fallback for debugging
   }
 
   Future<bool> _checkPermissions() async {
@@ -28,38 +31,17 @@ class FrameService {
     ].request();
     bool granted = statuses.values.every((status) => status.isGranted);
     if (!granted) {
-      _log.severe('Bluetooth permissions not granted');
+      _log.severe('bluetooth permissions not granted');
+      print('Bluetooth permissions not granted'); // Fallback
       await addLogMessage('Bluetooth permissions not granted');
     }
     return granted;
   }
 
-  Future<bool> _waitForBonding(frame_sdk_ble.BrilliantScannedDevice scannedFrame) async {
-    int bondRetries = 0;
-    const int maxBondRetries = 10;
-    while (bondRetries < maxBondRetries) {
-      try {
-        // Check if the device is bonded (this is a placeholder; frame_sdk might have a specific method)
-        if (scannedFrame.device.bondState.isBroadcast) {
-          _log.info('Device bonding completed');
-          return true;
-        }
-        _log.info('Waiting for bonding to complete... (Attempt ${bondRetries + 1}/$maxBondRetries)');
-        await Future.delayed(const Duration(seconds: 1));
-        bondRetries++;
-      } catch (e) {
-        _log.warning('Error checking bonding state: $e');
-        await Future.delayed(const Duration(seconds: 1));
-        bondRetries++;
-      }
-    }
-    _log.severe('Bonding failed after $maxBondRetries attempts');
-    return false;
-  }
-
   Future<void> connectToGlasses() async {
     if (_isConnected) {
       _log.info('already connected, skipping connection attempt');
+      print('Already connected, skipping'); // Fallback
       return;
     }
 
@@ -70,80 +52,87 @@ class FrameService {
     int retries = 0;
     while (retries < _maxRetries && !_isConnected) {
       try {
-        _log.info('Attempting to connect to Frame glasses (Retry ${retries + 1}/$_maxRetries)');
+        _log.info('attempting to connect to frame glasses (retry ${retries + 1}/$_maxRetries)');
+        print('Connecting to Frame, retry ${retries + 1}/$_maxRetries'); // Fallback
 
-        // Scan for Frame device with timeout
+        // Scan for Frame device
         frame_sdk_ble.BrilliantScannedDevice? scannedFrame;
         try {
           _log.info('starting bluetooth scan...');
+          print('Starting Bluetooth scan'); // Fallback
           await for (var device in frame_sdk_ble.BrilliantBluetooth.scan().timeout(
             const Duration(seconds: 10),
             onTimeout: (sink) {
-              sink.addError(TimeoutException('Bluetooth scan timed out after 10 seconds'));
+              sink.addError(TimeoutException('bluetooth scan timed out after 10 seconds'));
             },
           )) {
-            final deviceName = device.device.platformName ?? 'Unknown';
-            final deviceId = device.device.remoteId ?? 'Unknown';
-            _log.info('Found device: $deviceName, ID: $deviceId');
+            final deviceName = device.device.platformName ?? 'unknown';
+            final deviceId = device.device.remoteId ?? 'unknown';
+            _log.info('found device: $deviceName, id: $deviceId');
+            print('Found device: $deviceName, id: $deviceId'); // Fallback
             if (deviceName.toLowerCase().contains('frame')) {
               scannedFrame = device;
-              _log.info('selected Frame device: $deviceName, ID: $deviceId');
+              _log.info('selected frame device: $deviceName, id: $deviceId');
+              print('Selected Frame device: $deviceName, id: $deviceId'); // Fallback
               break;
             }
           }
           if (scannedFrame == null) {
-            throw Exception('No Frame device found during scan');
+            throw Exception('no frame device found during scan');
           }
         } catch (e) {
-          _log.severe('Error scanning for Frame: $e');
+          _log.severe('error scanning for frame: $e');
+          print('Scan error: $e'); // Fallback
           retries++;
-          await Future.delayed(const Duration(seconds: 2));
+          await Future.delayed(Duration(seconds: 2 * (retries + 1)));
           continue;
         }
 
-        // Wait for bonding to complete
-        if (!(await _waitForBonding(scannedFrame))) {
-          _log.severe('Failed to bond with device');
-          retries++;
-          await Future.delayed(const Duration(seconds: 2));
-          continue;
-        }
+        // Wait for Bluetooth stack stability
+        _log.info('waiting for device stability...');
+        print('Waiting for device stability'); // Fallback
+        await Future.delayed(const Duration(seconds: 2));
 
         // Connect to the scanned Frame
         try {
-          _log.info('attempting to connect to device: ${scannedFrame.device.platformName}, ID: ${scannedFrame.device.remoteId}');
+          _log.info('attempting to connect to device: ${scannedFrame.device.platformName}, id: ${scannedFrame.device.remoteId}');
+          print('Connecting to device: ${scannedFrame.device.platformName}, id: ${scannedFrame.device.remoteId}'); // Fallback
           _device = await frame_sdk_ble.BrilliantBluetooth.connect(scannedFrame).timeout(
-            const Duration(seconds: 20), // Increased timeout to 20 seconds
-            onTimeout: () => Future.error(TimeoutException('Bluetooth connection timed out after 20 seconds')),
+            const Duration(seconds: _connectTimeoutSeconds),
+            onTimeout: () => Future.error(TimeoutException('bluetooth connection timed out after $_connectTimeoutSeconds seconds')),
           );
-          _frame = frame_sdk.Frame(); // Adjust if device parameter is needed
+          _frame = frame_sdk.Frame();
           _isConnected = true;
-          _log.info('Connected to Frame glasses');
+          _log.info('connected to frame glasses');
+          print('Connected to Frame glasses'); // Fallback
           await addLogMessage('Connected to Frame glasses');
         } catch (e) {
-          _log.severe('Error connecting to Frame: $e');
+          _log.severe('error connecting to frame: $e');
+          print('Connection error: $e'); // Fallback
           retries++;
-          await Future.delayed(const Duration(seconds: 2));
+          await Future.delayed(Duration(seconds: 2 * (retries + 1)));
           continue;
         }
       } catch (e) {
-        _log.severe('Unexpected error during connection process: $e');
+        _log.severe('unexpected error during connection process: $e');
+        print('Unexpected error: $e'); // Fallback
         retries++;
-        await Future.delayed(const Duration(seconds: 2));
+        await Future.delayed(Duration(seconds: 2 * (retries + 1)));
       }
     }
 
     if (!_isConnected) {
-      _log.severe('Failed to connect to Frame glasses after $_maxRetries retries');
+      _log.severe('failed to connect to frame glasses after $_maxRetries retries');
+      print('Failed to connect after $_maxRetries retries'); // Fallback
       await addLogMessage('Failed to connect to Frame glasses after $_maxRetries retries');
-      throw Exception('Connection failed after maximum retries');
+      throw Exception('connection failed after maximum retries');
     }
   }
 
-  // Fallback method using frame_ble for low-level BLE connection
   Future<void> connectToGlassesWithFrameBle() async {
     if (_isConnected) {
       _log.info('already connected, skipping connection attempt');
+      print('Already connected, skipping'); // Fallback
       return;
     }
 
@@ -153,60 +142,77 @@ class FrameService {
 
     try {
       _log.info('attempting to connect using frame_ble...');
-      dynamic scannedFrame; // Use dynamic to handle potential type mismatch
+      print('Connecting using frame_ble'); // Fallback
+      dynamic scannedFrame;
       await for (var device in frame_ble.BrilliantBluetooth.scan().timeout(
         const Duration(seconds: 10),
         onTimeout: (sink) {
-          sink.addError(TimeoutException('Bluetooth scan timed out after 10 seconds'));
+          sink.addError(TimeoutException('bluetooth scan timed out after 10 seconds'));
         },
       )) {
-        final deviceName = device.device.platformName ?? 'Unknown';
-        final deviceId = device.device.remoteId ?? 'Unknown';
-        _log.info('Found device: $deviceName, ID: $deviceId');
+        final deviceName = device.device.platformName ?? 'unknown';
+        final deviceId = device.device.remoteId ?? 'unknown';
+        _log.info('found device: $deviceName, id: $deviceId');
+        print('Found device: $deviceName, id: $deviceId'); // Fallback
         if (deviceName.toLowerCase().contains('frame')) {
           scannedFrame = device;
-          _log.info('selected Frame device: $deviceName, ID: $deviceId');
+          _log.info('selected frame device: $deviceName, id: $deviceId');
+          print('Selected Frame device: $deviceName, id: $deviceId'); // Fallback
           break;
         }
       }
       if (scannedFrame == null) {
-        throw Exception('No Frame device found during scan');
+        throw Exception('no frame device found during scan');
       }
 
-      // Connect using frame_ble
-      _log.info('connecting to device: ${scannedFrame.device.platformName}, ID: ${scannedFrame.device.remoteId}');
-      final connectedDevice = await frame_ble.BrilliantBluetooth.connect(scannedFrame).timeout(const Duration(seconds: 20));
-      _frame = frame_sdk.Frame(); // Adjust if device parameter is needed
+      _log.info('waiting for device stability...');
+      print('Waiting for device stability'); // Fallback
+      await Future.delayed(const Duration(seconds: 2));
+
+      _log.info('connecting to device: ${scannedFrame.device.platformName}, id: ${scannedFrame.device.remoteId}');
+      print('Connecting to device: ${scannedFrame.device.platformName}, id: ${scannedFrame.device.remoteId}'); // Fallback
+      final connectedDevice = await frame_ble.BrilliantBluetooth.connect(scannedFrame).timeout(
+        const Duration(seconds: _connectTimeoutSeconds),
+        onTimeout: () => Future.error(TimeoutException('bluetooth connection timed out after $_connectTimeoutSeconds seconds')),
+      );
+      _frame = frame_sdk.Frame();
       _isConnected = true;
-      _log.info('Connected to Frame glasses using frame_ble');
+      _log.info('connected to frame glasses using frame_ble');
+      print('Connected to Frame glasses using frame_ble'); // Fallback
       await addLogMessage('Connected to Frame glasses using frame_ble');
     } catch (e) {
-      _log.severe('Error connecting with frame_ble: $e');
+      _log.severe('error connecting with frame_ble: $e');
+      print('FrameBle connection error: $e'); // Fallback
       await addLogMessage('Error connecting with frame_ble: $e');
-      throw Exception('Failed to connect using frame_ble: $e');
+      throw Exception('failed to connect using frame_ble: $e');
     }
   }
 
   Future<List<int>?> capturePhoto() async {
     if (!_isConnected) {
       _log.warning('cannot capture photo, not connected');
+      print('Cannot capture photo: not connected'); // Fallback
       await addLogMessage('Cannot capture photo: not connected');
       return null;
     }
     try {
       _log.info('attempting to capture photo');
+      print('Capturing photo'); // Fallback
       final photo = await _frame!.camera.takePhoto();
       if (photo != null && photo.isNotEmpty) {
         _log.info('photo captured, length: ${photo.length}');
+        print('Photo captured, length: ${photo.length}'); // Fallback
         await addLogMessage('Photo captured, length: ${photo.length}');
         return photo;
       } else {
         _log.warning('no photo data received');
+        print('No photo data received'); // Fallback
         await addLogMessage('No photo data received');
         return null;
       }
     } catch (e) {
       _log.severe('error capturing photo: $e');
+      print('Photo capture error: $e'); // Fallback
       await addLogMessage('Error capturing photo: $e');
       return null;
     }
@@ -215,17 +221,21 @@ class FrameService {
   Future<String?> getDisplayText() async {
     if (!_isConnected) {
       _log.warning('cannot get display text, not connected');
+      print('Cannot get display text: not connected'); // Fallback
       await addLogMessage('Cannot get display text: not connected');
       return null;
     }
     try {
       _log.info('fetching display text');
+      print('Fetching display text'); // Fallback
       final text = await _frame!.display.toString();
       _log.info('display text fetched: $text');
+      print('Display text fetched: $text'); // Fallback
       await addLogMessage('Display text fetched: $text');
       return text;
     } catch (e) {
       _log.severe('error getting display text: $e');
+      print('Display text error: $e'); // Fallback
       await addLogMessage('Error getting display text: $e');
       return null;
     }
@@ -234,18 +244,22 @@ class FrameService {
   Future<void> uploadLuaScript(String fileName) async {
     if (!_isConnected) {
       _log.warning('cannot upload script, not connected');
+      print('Cannot upload script: not connected'); // Fallback
       await addLogMessage('Cannot upload script: not connected');
       return;
     }
     try {
       _log.info('uploading lua script: $fileName');
+      print('Uploading Lua script: $fileName'); // Fallback
       final script = await rootBundle.loadString('assets/lua/$fileName');
       final luaCommand = 'frame.filesystem.write("$fileName", [[$script]])';
       await _frame!.runLua(luaCommand);
       _log.info('lua script $fileName uploaded');
+      print('Lua script $fileName uploaded'); // Fallback
       await addLogMessage('Lua script $fileName uploaded');
     } catch (e) {
       _log.severe('error uploading lua script: $e');
+      print('Lua script upload error: $e'); // Fallback
       await addLogMessage('Error uploading lua script: $e');
       rethrow;
     }
@@ -255,14 +269,15 @@ class FrameService {
     if (storageService == null) return;
     try {
       _log.info('adding log message: $message');
+      print('Adding log message: $message'); // Fallback
       final logEntry = LogEntry(
         timestamp: DateTime.now().toIso8601String(),
         message: message,
       );
       await storageService!.saveLog(logEntry);
     } catch (e) {
-      // Suppress BroadcastStreamController errors
-      _log.warning('Error logging message: $e');
+      _log.warning('error logging message: $e');
+      print('Log message error: $e'); // Fallback
     }
   }
 
@@ -270,13 +285,17 @@ class FrameService {
     if (!_isConnected) return;
     try {
       _log.info('disconnecting from frame glasses');
+      print('Disconnecting from Frame glasses'); // Fallback
       await _frame!.disconnect();
       _isConnected = false;
       _frame = null;
+      _device = null;
       _log.info('disconnected from frame glasses');
+      print('Disconnected from Frame glasses'); // Fallback
       await addLogMessage('Disconnected from Frame glasses');
     } catch (e) {
       _log.severe('error disconnecting: $e');
+      print('Disconnect error: $e'); // Fallback
       await addLogMessage('Error disconnecting: $e');
     }
   }
