@@ -13,57 +13,90 @@ class ModuleControlScreen extends StatefulWidget {
 
 class _ModuleControlScreenState extends State<ModuleControlScreen> {
   final Logger _log = Logger('ModuleControlScreen');
-  BuildContext? _scaffoldContext;
+  bool _isConnecting = false;
+  bool _isDisconnecting = false;
 
   @override
   Widget build(BuildContext context) {
-    return Builder(
-      builder: (BuildContext context) {
-        _scaffoldContext = context;
-        return Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Text(widget.frameService.isConnected ? 'Connected' : 'Disconnected'),
-              SizedBox(height: 20),
-              ElevatedButton(
-                onPressed: widget.frameService.isConnected ? _disconnect : _connect,
-                child: Text(widget.frameService.isConnected ? 'Disconnect' : 'Connect'),
+    return Scaffold(
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Text(widget.frameService.isConnected ? 'Connected' : 'Disconnected'),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: (_isConnecting || _isDisconnecting)
+                  ? null
+                  : widget.frameService.isConnected
+                  ? _disconnect
+                  : _connect,
+              child: Text(
+                _isConnecting
+                    ? 'Connecting...'
+                    : _isDisconnecting
+                    ? 'Disconnecting...'
+                    : widget.frameService.isConnected
+                    ? 'Disconnect'
+                    : 'Connect',
               ),
-            ],
-          ),
-        );
-      },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
   Future<void> _connect() async {
+    if (!mounted) return;
+    setState(() => _isConnecting = true);
     try {
-      _log.info('attempting to connect to frame glasses');
+      _log.info('Attempting to connect to Frame glasses');
       await widget.frameService.connectToGlasses();
-      setState(() {});
-      _log.info('connected to frame glasses');
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Connected to Frame glasses')),
+        );
+      }
+      _log.info('Connected to Frame glasses');
     } catch (e) {
-      _log.severe('error connecting to frame glasses: $e');
-      if (_scaffoldContext != null) {
-        ScaffoldMessenger.of(_scaffoldContext!).showSnackBar(
+      _log.severe('Error connecting to Frame glasses: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Connection Failed: $e')),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isConnecting = false);
       }
     }
   }
 
   Future<void> _disconnect() async {
+    if (!mounted) return;
+    setState(() => _isDisconnecting = true);
     try {
-      _log.info('attempting to disconnect from frame glasses');
+      _log.info('Attempting to disconnect from Frame glasses');
       await widget.frameService.disconnect();
-      _log.info('disconnected from frame glasses');
+      if (mounted) {
+        setState(() {});
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Disconnected from Frame glasses')),
+        );
+      }
+      _log.info('Disconnected from Frame glasses');
     } catch (e) {
-      _log.severe('error disconnecting: $e');
-      if (_scaffoldContext != null) {
-        ScaffoldMessenger.of(_scaffoldContext!).showSnackBar(
+      _log.severe('Error disconnecting: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Disconnection Failed: $e')),
         );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDisconnecting = false);
       }
     }
   }

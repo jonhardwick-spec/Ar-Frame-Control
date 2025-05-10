@@ -1,8 +1,16 @@
-# AR Frame Control
+# ar_project
 
-This app is designed to allow for:
-- Connection to Brilliant Labs AR glasses
-- Manage LUA scripts on the glasses (add/remove)
-- Retrieve a live camera feed with the text displayed on the glasses
+Flutter AR App
 
-**Camera feed is not "live" more like "fake live" - it captures an image every few ms so you get about 30fps, currently low fps for testing
+## Getting Started
+
+This project is a starting point for a Flutter application.
+
+A few resources to get you started if this is your first Flutter project:
+
+- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
+- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+
+For help getting started with Flutter development, view the
+[online documentation](https://docs.flutter.dev/), which offers tutorials,
+samples, guidance on mobile development, and a full API reference.

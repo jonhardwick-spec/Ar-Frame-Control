@@ -1,40 +1,51 @@
-import 'package:sembast/sembast_io.dart';
-import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:ar_project/models/log_entry.dart';
+import 'package:sembast/sembast_io.dart';
+
+import '../models/LogEntry.dart';
 
 class StorageService {
   Database? _db;
   final _logStore = stringMapStoreFactory.store('logs');
 
-  Future<Database> get database async {
-    _db ??= await databaseFactoryIo.openDatabase(
-      join((await getApplicationDocumentsDirectory()).path, 'ar_project.db'),
-    );
+  Future<Database> get _database async {
+    if (_db != null) return _db!;
+    final dir = await getApplicationDocumentsDirectory();
+    final path = '${dir.path}/ar_project.db';
+    _db = await databaseFactoryIo.openDatabase(path);
     return _db!;
   }
 
-  Future<void> saveLog(LogEntry log) async {
-    final db = await database;
-    await _logStore.add(db, {
-      'timestamp': log.timestamp,
-      'message': log.message,
-    });
+  Future<void> saveLog(LogEntry entry) async {
+    try {
+      final db = await _database;
+      await _logStore.add(db, {
+        'timestamp': entry.timestamp.toIso8601String(),
+        'message': entry.message,
+      });
+    } catch (e) {
+      // Replace with logging in production
+      // ignore: avoid_print
+      print('Error saving log: $e');
+    }
   }
 
-  Future<List<LogEntry>> getLogs() async {
-    final db = await database;
-    final records = await _logStore.find(db);
-    return records
-        .map((record) => LogEntry(
-      timestamp: record.value['timestamp'] as String,
-      message: record.value['message'] as String,
-    ))
-        .toList();
+  Future<List<String>> getLogs() async {
+    try {
+      final db = await _database;
+      final records = await _logStore.find(db);
+      return records.map((r) => '${r['timestamp']}: ${r['message']}').toList();
+    } catch (e) {
+      // Replace with logging in production
+      // ignore: avoid_print
+      print('Error retrieving logs: $e');
+      return [];
+    }
   }
 
-  Future<void> clearLogs() async {
-    final db = await database;
-    await _logStore.delete(db);
+  Future<void> dispose() async {
+    if (_db != null) {
+      await _db!.close();
+      _db = null;
+    }
   }
 }

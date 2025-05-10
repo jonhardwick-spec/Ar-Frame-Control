@@ -10,7 +10,8 @@ dependencies:
     sdk: flutter
   permission_handler: ^11.3.1
   frame_ble: ^3.0.0
-  logging: ^1.2.0
+  logger: ^2.5.0
+  simple_frame_app: ^0.0.1
   image: ^4.3.0
   sembast: ^3.8.5
   frame_msg: ^2.0.0
@@ -19,6 +20,8 @@ dependencies:
   path: ^1.8.3
   file_picker: ^10.1.7  # removed per previous workaround
   frame_sdk: ^0.0.7
+  flutter_blue_plus: ^1.35.0
+  geolocator: ^14.0.0
 
 assets:
   - assets/lua/

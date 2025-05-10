@@ -1,0 +1,4 @@
+include ':settings.gradle.kts'
+project(':settings.gradle.kts').projectDir = new File(rootDir, 'android/settings.gradle.kts')
+include ':build.gradle.kts'
+project(':build.gradle.kts').projectDir = new File(rootDir, 'android/build.gradle.kts')
