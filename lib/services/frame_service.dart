@@ -121,13 +121,7 @@ class FrameService {
             addLogMessage('Attempting to connect to device ${target.device.remoteId} (retry $attempt/$_maxRetries)');
             debugPrint('[FrameService] Attempting to connect to device ${target.device.remoteId} (retry $attempt/$_maxRetries)');
 
-            if (await target.device.connectionState.first == BluetoothConnectionState.connected) {
-              _log.info('Device already connected, proceeding with setup');
-              debugPrint('[FrameService] Device already connected, proceeding with setup');
-            } else {
-              await target.device.connect(autoConnect: false, timeout: Duration(seconds: 10));
-            }
-
+            await target.device.connect(autoConnect: false, timeout: Duration(seconds: 10));
             bool bonded = await _ensureBonding(target.device);
             if (!bonded) {
               _log.warning('Bonding failed, proceeding without bonding');
@@ -135,10 +129,11 @@ class FrameService {
               debugPrint('[FrameService] Bonding failed, proceeding without bonding');
             }
 
-            await Future.delayed(Duration(seconds: 1));
-            if (await target.device.connectionState.first != BluetoothConnectionState.connected) {
-              throw Exception('Device disconnected during setup');
-            }
+            await Future.delayed(Duration(milliseconds: 500));
+            await target.device.discoverServices();
+            _log.info('Services discovered');
+            addLogMessage('Services discovered');
+            debugPrint('[FrameService] Services discovered');
 
             if (!_mtuSet) {
               for (int mtuAttempt = 1; mtuAttempt <= 2; mtuAttempt++) {
@@ -165,17 +160,6 @@ class FrameService {
                 }
               }
             }
-
-            if (await target.device.connectionState.first != BluetoothConnectionState.connected) {
-              throw Exception('Device disconnected before service discovery');
-            }
-
-            _log.info('Discovering services...');
-            debugPrint('[FrameService] Discovering services...');
-            await target.device.discoverServices();
-            _log.info('Services discovered');
-            addLogMessage('Services discovered');
-            debugPrint('[FrameService] Services discovered');
 
             _stateSub = target.device.connectionState.listen((state) {
               _log.info('Connection state changed: $state');
@@ -315,6 +299,11 @@ class FrameService {
       debugPrint('[FrameService] Photo captured successfully, size: ${photoData.length} bytes');
       return photoData;
     } catch (e) {
+      if (e.toString().contains('Not connected')) {
+        _isConnected = false;
+        _log.severe('Connection lost while capturing photo');
+        addLogMessage('Connection lost while capturing photo');
+      }
       _log.severe('Error capturing photo: $e');
       addLogMessage('Error capturing photo: $e');
       debugPrint('[FrameService] Error capturing photo: $e');
@@ -336,9 +325,9 @@ class FrameService {
       debugPrint('[FrameService] Listing Lua scripts on Frame glasses');
       String? scriptList = await _frame!.runLua("return frame.app.list()");
       if (scriptList == null || scriptList.isEmpty) {
-        _log.info('No scripts found on Frame glasses');
-        addLogMessage('No scripts found on Frame glasses');
-        debugPrint('[FrameService] No scripts found on Frame glasses');
+        _log.info('No Lua scripts found');
+        addLogMessage('No Lua scripts found');
+        debugPrint('[FrameService] No Lua scripts found');
         return [];
       }
       List<String> scripts = scriptList.split(',').map((s) => s.trim()).toList();
@@ -347,6 +336,12 @@ class FrameService {
       debugPrint('[FrameService] Retrieved script list: $scripts');
       return scripts;
     } catch (e) {
+      if (e.toString().contains('Not connected')) {
+        _isConnected = false;
+        _log.severe('Connection lost while listing scripts');
+        addLogMessage('Connection lost while listing scripts');
+        debugPrint('[FrameService] Connection lost while listing scripts');
+      }
       _log.severe('Error listing Lua scripts: $e');
       addLogMessage('Error listing Lua scripts: $e');
       debugPrint('[FrameService] Error listing Lua scripts: $e');
@@ -366,12 +361,24 @@ class FrameService {
       _log.info('Downloading Lua script: $scriptName');
       addLogMessage('Downloading Lua script: $scriptName');
       debugPrint('[FrameService] Downloading Lua script: $scriptName');
-      Future<String?> scriptContent = _frame!.runLua("return frame.storage.read('$scriptName')");
-      _log.info('Initiated download for script $scriptName');
-      addLogMessage('Initiated download for script $scriptName');
-      debugPrint('[FrameService] Initiated download for script $scriptName');
+      String? scriptContent = await _frame!.runLua("return frame.storage.read('$scriptName')");
+      if (scriptContent == null) {
+        _log.warning('Script $scriptName not found');
+        addLogMessage('Script $scriptName not found');
+        debugPrint('[FrameService] Script $scriptName not found');
+        return null;
+      }
+      _log.info('Downloaded script $scriptName successfully');
+      addLogMessage('Downloaded script $scriptName successfully');
+      debugPrint('[FrameService] Downloaded script $scriptName successfully');
       return scriptContent;
     } catch (e) {
+      if (e.toString().contains('Not connected')) {
+        _isConnected = false;
+        _log.severe('Connection lost while downloading script');
+        addLogMessage('Connection lost while downloading script');
+        debugPrint('[FrameService] Connection lost while downloading script');
+      }
       _log.severe('Error downloading Lua script $scriptName: $e');
       addLogMessage('Error downloading Lua script $scriptName: $e');
       debugPrint('[FrameService] Error downloading Lua script $scriptName: $e');
@@ -396,6 +403,12 @@ class FrameService {
       addLogMessage('Uploaded script $scriptName successfully');
       debugPrint('[FrameService] Uploaded script $scriptName successfully');
     } catch (e) {
+      if (e.toString().contains('Not connected')) {
+        _isConnected = false;
+        _log.severe('Connection lost while uploading script');
+        addLogMessage('Connection lost while uploading script');
+        debugPrint('[FrameService] Connection lost while uploading script');
+      }
       _log.severe('Error uploading Lua script $scriptName: $e');
       addLogMessage('Error uploading Lua script $scriptName: $e');
       debugPrint('[FrameService] Error uploading Lua script $scriptName: $e');
@@ -420,6 +433,12 @@ class FrameService {
       addLogMessage('Removed script $scriptName successfully');
       debugPrint('[FrameService] Removed script $scriptName successfully');
     } catch (e) {
+      if (e.toString().contains('Not connected')) {
+        _isConnected = false;
+        _log.severe('Connection lost while removing script');
+        addLogMessage('Connection lost while removing script');
+        debugPrint('[FrameService] Connection lost while removing script');
+      }
       _log.severe('Error removing Lua script $scriptName: $e');
       addLogMessage('Error removing Lua script $scriptName: $e');
       debugPrint('[FrameService] Error removing Lua script $scriptName: $e');
