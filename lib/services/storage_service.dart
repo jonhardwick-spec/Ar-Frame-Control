@@ -1,11 +1,11 @@
 import 'package:path_provider/path_provider.dart';
 import 'package:sembast/sembast_io.dart';
-
 import '../models/LogEntry.dart';
 
 class StorageService {
   Database? _db;
   final _logStore = stringMapStoreFactory.store('logs');
+  final _scriptStore = stringMapStoreFactory.store('scripts');
 
   Future<Database> get _database async {
     if (_db != null) return _db!;
@@ -39,6 +39,41 @@ class StorageService {
       // ignore: avoid_print
       print('Error retrieving logs: $e');
       return [];
+    }
+  }
+
+  Future<void> saveScript(String filename, String content) async {
+    try {
+      final db = await _database;
+      await _scriptStore.add(db, {
+        'filename': filename,
+        'content': content,
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+    } catch (e) {
+      // Replace with logging in production
+      // ignore: avoid_print
+      print('Error saving script: $e');
+      throw Exception('Failed to save script: $e');
+    }
+  }
+
+  Future<String> readScript(String filename) async {
+    try {
+      final db = await _database;
+      final record = await _scriptStore.findFirst(
+        db,
+        finder: Finder(filter: Filter.equals('filename', filename)),
+      );
+      if (record == null) {
+        throw Exception('Script not found: $filename');
+      }
+      return record['content'] as String;
+    } catch (e) {
+      // Replace with logging in production
+      // ignore: avoid_print
+      print('Error reading script: $e');
+      throw Exception('Failed to read script: $e');
     }
   }
 

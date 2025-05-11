@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart' show BluetoothDevice, FlutterBluePlus, ScanResult, Guid;
 import 'package:frame_sdk/camera.dart';
 import 'package:frame_sdk/frame_sdk.dart' as frame_sdk;

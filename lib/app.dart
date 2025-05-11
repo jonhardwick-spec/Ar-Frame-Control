@@ -63,7 +63,7 @@ class _AppState extends State<App> {
         index: _selectedIndex,
         children: [
           FeedScreen(frameService: frameService),
-          ModuleControlScreen(frameService: frameService),
+          ModuleControlScreen(frameService: frameService, storageService: storageService),
           ConsoleLogScreen(storageService: storageService),
         ],
       ),

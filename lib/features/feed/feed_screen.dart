@@ -19,7 +19,7 @@ class _FeedScreenState extends State<FeedScreen> {
           try {
             final photoData = await widget.frameService.capturePhoto();
             if (!mounted) return;
-            if (photoData!.isNotEmpty) {
+            if (photoData.isNotEmpty) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(content: Text('Photo captured: ${photoData.length} bytes')),
             );} else {
