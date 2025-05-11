@@ -23,6 +23,7 @@ class FrameService {
   bool _mtuSet = false;
   List<ScanResult> _discoveredDevices = [];
   BluetoothDevice? _lastConnectedDevice;
+  bool _isOperationRunning = false; // Semaphore to prevent concurrent operations
 
   final connectionState = ValueNotifier<bool>(false);
 
@@ -214,7 +215,6 @@ class FrameService {
             addLogMessage('Successfully connected to Frame glasses');
             debugPrint('[FrameService] Successfully connected to Frame glasses');
             await _stopScan();
-            // Send "connected" indicator to glasses
             await _sendConnectedIndicator();
             break;
           } catch (e) {
@@ -244,8 +244,7 @@ class FrameService {
 
   Future<void> _sendConnectedIndicator() async {
     try {
-      // Assuming the glasses have a way to display text, e.g., via a Lua script
-      await _frame!.runLua('frame.display.text("connected to ar control", 0, 0)');
+      await _frame!.runLua('frame.display.text("Connected to AR Control", 0, 0)');
       _log.info('Sent connected indicator to glasses');
       addLogMessage('Sent connected indicator to glasses');
     } catch (e) {
@@ -332,7 +331,7 @@ class FrameService {
         return false;
       });
 
-      await bondSubscription?.cancel();
+      await bondSubscription.cancel();
       return bonded;
     } catch (e) {
       _log.severe('Error during bonding: $e');
@@ -344,15 +343,18 @@ class FrameService {
 
   Future<bool> verifyConnection() async {
     if (!_isConnected || _frame == null || _lastConnectedDevice == null) {
+      _log.info('Connection invalid: _isConnected=$_isConnected, _frame=${_frame != null}, _lastConnectedDevice=${_lastConnectedDevice != null}');
       return false;
     }
     try {
       final state = await _lastConnectedDevice!.connectionState.first;
+      _log.info('Bluetooth connection state: $state');
       if (state != BluetoothConnectionState.connected) {
         _updateConnectionState(false);
         return false;
       }
       String? test = await _frame!.runLua('return "test"').timeout(const Duration(seconds: 5));
+      _log.info('Test Lua response: $test');
       return test == '"test"';
     } catch (e) {
       _updateConnectionState(false);
@@ -404,39 +406,51 @@ class FrameService {
   }
 
   Future<T> _performOperationWithRetry<T>(Future<T> Function() operation, String operationName) async {
-    for (int attempt = 1; attempt <= _maxRetries; attempt++) {
-      try {
-        if (!await verifyConnection()) {
-          _log.info('Connection lost, attempting to reconnect for $operationName');
-          addLogMessage('Connection lost, attempting to reconnect');
-          await connectToGlasses();
-        }
-        return await operation().timeout(Duration(seconds: 10));
-      } catch (e) {
-        if (e is TimeoutException) {
-          _log.severe('$operationName timed out (attempt $attempt/$_maxRetries)');
-          addLogMessage('$operationName timed out');
-          if (attempt == _maxRetries) {
-            throw Exception('$operationName failed after maximum retries');
+    // Wait until no other operation is running
+    while (_isOperationRunning) {
+      _log.fine('Waiting for another operation to complete before starting $operationName');
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+
+    _isOperationRunning = true;
+    try {
+      for (int attempt = 1; attempt <= _maxRetries; attempt++) {
+        try {
+          if (!await verifyConnection()) {
+            _log.info('Connection lost, attempting to reconnect for $operationName');
+            addLogMessage('Connection lost, attempting to reconnect');
+            await connectToGlasses();
+            await Future.delayed(const Duration(seconds: 2));
           }
-          await Future.delayed(Duration(seconds: _retryDelaySeconds));
-        } else {
-          _log.severe('Error during $operationName: $e');
-          addLogMessage('Error during $operationName: $e');
-          throw e;
+          return await operation().timeout(const Duration(seconds: 30));
+        } catch (e) {
+          if (e is TimeoutException) {
+            _log.severe('$operationName timed out after 30 seconds (attempt $attempt/$_maxRetries)');
+            addLogMessage('$operationName timed out');
+            if (attempt == _maxRetries) {
+              throw Exception('$operationName failed after maximum retries');
+            }
+            await Future.delayed(Duration(seconds: _retryDelaySeconds));
+          } else {
+            _log.severe('Error during $operationName: $e');
+            addLogMessage('Error during $operationName: $e');
+            throw e;
+          }
         }
       }
+      throw Exception('Operation failed after maximum retries');
+    } finally {
+      _isOperationRunning = false;
     }
-    throw Exception('Operation failed after maximum retries');
   }
 
   Future<List<int>> capturePhoto() async {
     return _performOperationWithRetry(() async {
-      _log.info('Capturing photo');
+      _log.info('Capturing photo, connection state: $_isConnected');
       addLogMessage('Capturing photo');
       final photoData = await _frame!.camera.takePhoto(
         autofocusSeconds: 1,
-        quality: PhotoQuality.full,
+        quality: PhotoQuality.medium,
         autofocusType: AutoFocusType.average,
       );
       _log.info('Photo captured successfully, size: ${photoData.length} bytes');
@@ -447,9 +461,9 @@ class FrameService {
 
   Future<List<String>> listLuaScripts() async {
     return _performOperationWithRetry(() async {
-      _log.info('Listing Lua scripts on Frame glasses');
+      _log.info('Listing Lua scripts on Frame glasses, connection state: $_isConnected');
       addLogMessage('Listing Lua scripts on Frame glasses');
-      String? scriptList = await _frame!.runLua("return frame.app.list()").timeout(Duration(seconds: 10));
+      String? scriptList = await _frame!.runLua("return frame.app.list()");
       if (scriptList == null || scriptList.isEmpty) {
         _log.info('No Lua scripts found');
         addLogMessage('No Lua scripts found');
@@ -462,9 +476,25 @@ class FrameService {
     }, 'Listing Lua scripts');
   }
 
+  Future<String?> downloadLuaScript(String scriptName) async {
+    return _performOperationWithRetry(() async {
+      _log.info('Downloading Lua script: $scriptName, connection state: $_isConnected');
+      addLogMessage('Downloading Lua script: $scriptName');
+      String? scriptContent = await _frame!.runLua("return frame.storage.read('$scriptName')");
+      if (scriptContent == null) {
+        _log.warning('Script $scriptName not found');
+        addLogMessage('Script $scriptName not found');
+        return null;
+      }
+      _log.info('Downloaded script $scriptName successfully');
+      addLogMessage('Downloaded script $scriptName successfully');
+      return scriptContent;
+    }, 'Downloading Lua script');
+  }
+
   Future<void> uploadLuaScript(String scriptName, String scriptContent) async {
     await _performOperationWithRetry(() async {
-      _log.info('Uploading Lua script: $scriptName');
+      _log.info('Uploading Lua script: $scriptName, connection state: $_isConnected');
       addLogMessage('Uploading Lua script: $scriptName');
       await _frame!.runLua("frame.storage.write('$scriptName', '$scriptContent')");
       _log.info('Uploaded script $scriptName successfully');
@@ -506,44 +536,5 @@ class FrameService {
     _scanSubscription?.cancel();
     _stateSub?.cancel();
     disconnect();
-  }
-
-  Future<String?> downloadLuaScript(String scriptName) async {
-    if (!_isConnected || _frame == null) {
-      _updateConnectionState(false);
-      _log.warning('Cannot download script: Not connected to Frame glasses');
-      addLogMessage('Cannot download script: Not connected');
-      debugPrint('[FrameService] Cannot download script: Not connected');
-      throw Exception('Not connected to Frame glasses');
-    }
-
-    try {
-      _log.info('Downloading Lua script: $scriptName');
-      addLogMessage('Downloading Lua script: $scriptName');
-      debugPrint('[FrameService] Downloading Lua script: $scriptName');
-      String? scriptContent = await _frame!.runLua("return frame.storage.read('$scriptName')");
-      if (scriptContent == null) {
-        _log.warning('Script $scriptName not found');
-        addLogMessage('Script $scriptName not found');
-        debugPrint('[FrameService] Script $scriptName not found');
-        return null;
-      }
-      _log.info('Downloaded script $scriptName successfully');
-      addLogMessage('Downloaded script $scriptName successfully');
-      debugPrint('[FrameService] Downloaded script $scriptName successfully');
-      return scriptContent;
-    } catch (e) {
-      if (e.toString().contains('Not connected')) {
-        _updateConnectionState(false);
-        _log.severe('Connection lost while downloading script');
-        addLogMessage('Connection lost while downloading script');
-        debugPrint('[FrameService] Connection lost while downloading script');
-        throw Exception('Connection lost while downloading script');
-      }
-      _log.severe('Error downloading Lua script $scriptName: $e');
-      addLogMessage('Error downloading Lua script $scriptName: $e');
-      debugPrint('[FrameService] Error downloading Lua script $scriptName: $e');
-      throw Exception('Failed to download Lua script: $e');
-    }
   }
 }
