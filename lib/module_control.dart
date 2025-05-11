@@ -60,13 +60,13 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(widget.frameService.isConnected ? 'Connected' : 'Disconnected'),
+          Text(widget.frameService.connectionState.value ? 'Connected' : 'Disconnected'),
           const SizedBox(height: 20),
           ElevatedButton(
-            onPressed: widget.frameService.isConnected
+            onPressed: widget.frameService.connectionState.value
                 ? () => _disconnect(context)
                 : () => _connect(context),
-            child: Text(widget.frameService.isConnected ? 'Disconnect' : 'Connect'),
+            child: Text(widget.frameService.connectionState.value ? 'Disconnect' : 'Connect'),
           ),
         ],
       ),

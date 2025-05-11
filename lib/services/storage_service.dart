@@ -1,11 +1,16 @@
+import 'package:flutter/cupertino.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sembast/sembast_io.dart';
 import '../models/LogEntry.dart';
+import '../models/log_entry.dart';
 
 class StorageService {
   Database? _db;
   final _logStore = stringMapStoreFactory.store('logs');
   final _scriptStore = stringMapStoreFactory.store('scripts');
+
+  final logsNotifier = ValueNotifier<List<LogEntry>>([]);
+  List<LogEntry> get logs => logsNotifier.value;
 
   Future<Database> get _database async {
     if (_db != null) return _db!;
@@ -17,6 +22,7 @@ class StorageService {
 
   Future<void> saveLog(LogEntry entry) async {
     try {
+      logsNotifier.value = [...logsNotifier.value, entry];
       final db = await _database;
       await _logStore.add(db, {
         'timestamp': entry.timestamp.toIso8601String(),
@@ -39,6 +45,19 @@ class StorageService {
       // ignore: avoid_print
       print('Error retrieving logs: $e');
       return [];
+    }
+  }
+
+  Future<void> clearLogs() async {
+    try {
+      final db = await _database;
+      await _logStore.delete(db);
+      logsNotifier.value = [];
+    } catch (e) {
+      // Replace with logging in production
+      // ignore: avoid_print
+      print('Error clearing logs: $e');
+      throw Exception('Failed to clear logs: $e');
     }
   }
 

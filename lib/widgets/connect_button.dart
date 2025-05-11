@@ -10,9 +10,9 @@ class ConnectButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return FloatingActionButton(
-      onPressed: frameService.isConnected ? null : frameService.connectToGlasses,
-      backgroundColor: frameService.isConnected ? Colors.grey : Colors.blue,
-      child: frameService.isConnected
+      onPressed: frameService.connectionState.value ? null : frameService.connectToGlasses,
+      backgroundColor: frameService.connectionState.value ? Colors.grey : Colors.blue,
+      child: frameService.connectionState.value
           ? const Icon(Icons.bluetooth_connected)
           : const Icon(Icons.bluetooth),
 

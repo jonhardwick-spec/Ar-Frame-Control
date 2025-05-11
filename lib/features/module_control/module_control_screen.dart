@@ -1,134 +1,168 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:logging/logging.dart';
-import 'package:ar_project/services/frame_service.dart';
+import 'package:ar_project/services/frame_service.dart' as frame_service;
 import 'package:ar_project/services/storage_service.dart';
+import 'package:ar_project/models/log_entry.dart';
 
 import '../../models/LogEntry.dart';
 
 class ModuleControlScreen extends StatefulWidget {
-  final FrameService frameService;
+  final frame_service.FrameService frameService;
   final StorageService storageService;
 
   const ModuleControlScreen({
-    super.key,
+    Key? key,
     required this.frameService,
     required this.storageService,
-  });
+  }) : super(key: key);
 
   @override
-  State<ModuleControlScreen> createState() => _ModuleControlScreenState();
+  _ModuleControlScreenState createState() => _ModuleControlScreenState();
 }
 
 class _ModuleControlScreenState extends State<ModuleControlScreen> {
-  final Logger _log = Logger('ModuleControlScreen');
-  int? _batteryLevel;
-  List<String> _scripts = [];
+  List<String> _luaScripts = [];
+  String? _selectedScript;
+  String _scriptContent = '';
   bool _isLoading = false;
-  late ValueNotifier<bool> _connectionNotifier;
+  String? _errorMessage;
+  List<int>? _photoData;
+  late TextEditingController _textController;
 
   @override
   void initState() {
     super.initState();
-    _log.info('ModuleControlScreen initialized');
-    widget.storageService.saveLog(LogEntry(DateTime.now(), 'ModuleControlScreen initialized'));
-    _connectionNotifier = ValueNotifier<bool>(widget.frameService.isConnected);
-    _checkBattery();
-    if (widget.frameService.isConnected) {
-      _listScripts();
-    }
+    _textController = TextEditingController(text: _scriptContent);
+    _textController.addListener(() {
+      _scriptContent = _textController.text;
+    });
+    _checkConnectionAndLoadScripts();
   }
 
-  Future<void> _toggleConnection() async {
-    setState(() => _isLoading = true);
+  @override
+  void dispose() {
+    _textController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkConnectionAndLoadScripts() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
     try {
-      if (widget.frameService.isConnected) {
-        await widget.frameService.disconnect();
-        _connectionNotifier.value = false;
-        setState(() {
-          _scripts = [];
-          _batteryLevel = null;
-        });
+      if (await widget.frameService.verifyConnection()) {
+        _luaScripts = await widget.frameService.listLuaScripts();
       } else {
-        await widget.frameService.connectToGlasses();
-        _connectionNotifier.value = true;
-        await _checkBattery();
-        await _listScripts();
+        setState(() {
+          _errorMessage = 'Not connected to Frame glasses';
+        });
       }
     } catch (e) {
-      _log.severe('Error toggling connection: $e');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Error toggling connection: $e'));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Connection error: $e')),
-        );
-      }
+      setState(() {
+        _errorMessage = e.toString();
+      });
     } finally {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
-  Future<void> _checkBattery() async {
+  Future<void> _connectToGlasses() async {
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
     try {
-      final level = await widget.frameService.checkBattery();
-      if (mounted) {
-        setState(() => _batteryLevel = level);
-      }
-      _log.info('Battery level updated: $_batteryLevel%');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Battery level updated: $_batteryLevel%'));
+      await widget.frameService.connectToGlasses();
+      _luaScripts = await widget.frameService.listLuaScripts();
     } catch (e) {
-      _log.severe('Error checking battery: $e');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Error checking battery: $e'));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Battery check error: $e')),
-        );
-      }
+      setState(() {
+        _errorMessage = e.toString();
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
   Future<void> _capturePhoto() async {
-    setState(() => _isLoading = true);
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+      _photoData = null;
+    });
     try {
-      final photoData = await widget.frameService.capturePhoto();
-      _log.info('Photo captured, size: ${photoData.length} bytes');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Photo captured, size: ${photoData.length} bytes'));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Photo captured successfully')),
-        );
-      }
+      _photoData = await widget.frameService.capturePhoto();
     } catch (e) {
-      _log.severe('Error capturing photo: $e');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Error capturing photo: $e'));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Photo capture error: $e')),
-        );
-      }
+      setState(() {
+        _errorMessage = e.toString();
+      });
     } finally {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
-  Future<void> _listScripts() async {
-    setState(() => _isLoading = true);
+  Future<void> _downloadScript() async {
+    if (_selectedScript == null) {
+      setState(() {
+        _errorMessage = 'No script selected';
+      });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
     try {
-      final scripts = await widget.frameService.listLuaScripts();
-      if (mounted) {
-        setState(() => _scripts = scripts);
+      String? content = await widget.frameService.downloadLuaScript(_selectedScript!);
+      if (content != null) {
+        setState(() {
+          _scriptContent = content;
+          _textController.text = content;
+        });
+      } else {
+        setState(() {
+          _errorMessage = 'Script not found';
+        });
       }
-      _log.info('Scripts listed: $_scripts');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Scripts listed: $_scripts'));
     } catch (e) {
-      _log.severe('Error listing scripts: $e');
-      widget.storageService.saveLog(LogEntry(DateTime.now(), 'Error listing scripts: $e'));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Script listing error: $e')),
-        );
-      }
+      setState(() {
+        _errorMessage = e.toString();
+      });
     } finally {
-      setState(() => _isLoading = false);
+      setState(() {
+        _isLoading = false;
+      });
+    }
+  }
+
+  Future<void> _uploadScript() async {
+    if (_selectedScript == null) {
+      setState(() {
+        _errorMessage = 'No script selected';
+      });
+      return;
+    }
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+    try {
+      await widget.frameService.uploadLuaScript(_selectedScript!, _scriptContent);
+      _luaScripts = await widget.frameService.listLuaScripts();
+    } catch (e) {
+      setState(() {
+        _errorMessage = e.toString();
+      });
+    } finally {
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -136,116 +170,120 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AR Frame Controller'),
-        backgroundColor: Theme.of(context).primaryColor,
+        title: const Text('AR Frame Control'),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            ValueListenableBuilder<bool>(
-              valueListenable: _connectionNotifier,
-              builder: (context, isConnected, _) {
-                return Column(
-                  children: [
-                    Text(
-                      'Status: ${isConnected ? 'Connected' : 'Disconnected'}',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                    ElevatedButton(
-                      onPressed: _isLoading ? null : _toggleConnection,
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                      ),
-                      child: Text(
-                        _isLoading
-                            ? 'Processing...'
-                            : isConnected
-                            ? 'Disconnect'
-                            : 'Connect',
-                        style: const TextStyle(fontSize: 16),
-                      ),
-                    ),
-                  ],
-                );
-              },
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Battery: ${_batteryLevel != null ? '$_batteryLevel%' : 'Unknown'}',
-              style: const TextStyle(fontSize: 16),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _isLoading || !_connectionNotifier.value
-                  ? null
-                  : _capturePhoto,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              child: const Text(
-                'Capture Photo',
-                style: TextStyle(fontSize: 16),
-              ),
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton(
-              onPressed: _isLoading || !_connectionNotifier.value
-                  ? null
-                  : _listScripts,
-              style: ElevatedButton.styleFrom(
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              child: const Text(
-                'Refresh Lua Scripts',
-                style: TextStyle(fontSize: 16),
-              ),
-            ),
-            const SizedBox(height: 16),
-            Expanded(
-              child: _scripts.isEmpty
-                  ? const Center(
-                child: Text(
-                  'No scripts found',
-                  style: TextStyle(fontSize: 16),
+      body: ValueListenableBuilder<bool>(
+        valueListenable: widget.frameService.connectionState,
+        builder: (context, isConnected, child) {
+          return Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isConnected ? 'Connected to Frame glasses' : 'Disconnected',
+                  style: TextStyle(
+                    fontSize: 18,
+                    color: isConnected ? Colors.green : Colors.red,
+                  ),
                 ),
-              )
-                  : ListView.builder(
-                itemCount: _scripts.length,
-                itemBuilder: (context, index) {
-                  return Card(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    child: ListTile(
-                      title: Text(
-                        _scripts[index],
-                        style: const TextStyle(fontSize: 16),
-                      ),
+                const SizedBox(height: 16),
+                if (!isConnected)
+                  ElevatedButton(
+                    onPressed: _isLoading ? null : _connectToGlasses,
+                    child: const Text('Connect to Glasses'),
+                  ),
+                const SizedBox(height: 16),
+                if (isConnected) ...[
+                  ElevatedButton(
+                    onPressed: _isLoading ? null : _capturePhoto,
+                    child: const Text('Capture Photo'),
+                  ),
+                  const SizedBox(height: 16),
+                  if (_photoData != null)
+                    Image.memory(
+                      Uint8List.fromList(_photoData!),
+                      height: 200,
+                      fit: BoxFit.contain,
                     ),
-                  );
-                },
-              ),
+                  const SizedBox(height: 16),
+                  DropdownButton<String>(
+                    hint: const Text('Select Lua Script'),
+                    value: _selectedScript,
+                    items: _luaScripts
+                        .map((script) => DropdownMenuItem(
+                      value: script,
+                      child: Text(script),
+                    ))
+                        .toList(),
+                    onChanged: (value) {
+                      setState(() {
+                        _selectedScript = value;
+                        _scriptContent = '';
+                        _textController.text = '';
+                        _errorMessage = null;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      ElevatedButton(
+                        onPressed: _isLoading ? null : _downloadScript,
+                        child: const Text('Download Script'),
+                      ),
+                      const SizedBox(width: 16),
+                      ElevatedButton(
+                        onPressed: _isLoading ? null : _uploadScript,
+                        child: const Text('Upload Script'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Script Content:'),
+                  Expanded(
+                    child: TextField(
+                      maxLines: null,
+                      expands: true,
+                      enabled: !_isLoading,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                      ),
+                      controller: _textController,
+                    ),
+                  ),
+                ],
+                if (_isLoading)
+                  const Center(child: CircularProgressIndicator()),
+                if (_errorMessage != null)
+                  Text(
+                    _errorMessage!,
+                    style: const TextStyle(color: Colors.red),
+                  ),
+                const SizedBox(height: 16),
+                const Text('Logs:'),
+                Expanded(
+                  child: ValueListenableBuilder<List<LogEntry>>(
+                    valueListenable: widget.storageService.logsNotifier,
+                    builder: (context, logs, child) {
+                      return ListView.builder(
+                        itemCount: logs.length,
+                        itemBuilder: (context, index) {
+                          final log = logs[index];
+                          return ListTile(
+                            title: Text(log.message),
+                            subtitle: Text(log.timestamp.toString()),
+                          );
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
             ),
-          ],
-        ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _isLoading || !_connectionNotifier.value ? null : _checkBattery,
-        backgroundColor: Theme.of(context).primaryColor,
-        child: const Icon(Icons.battery_std),
+          );
+        },
       ),
     );
-  }
-
-  @override
-  void dispose() {
-    _connectionNotifier.dispose();
-    _log.info('ModuleControlScreen disposed');
-    widget.storageService.saveLog(LogEntry(DateTime.now(), 'ModuleControlScreen disposed'));
-    super.dispose();
   }
 }
