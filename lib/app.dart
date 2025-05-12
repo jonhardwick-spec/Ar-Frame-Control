@@ -6,7 +6,6 @@ import 'services/storage_service.dart';
 import 'features/feed/feed_screen.dart';
 import 'features/module_control/module_control_screen.dart';
 import 'features/console_log/console_log_screen.dart';
-import 'widgets/connect_button.dart';
 
 class App extends StatefulWidget {
   const App({super.key});
@@ -85,12 +84,6 @@ class _AppState extends State<App> {
         currentIndex: _selectedIndex,
         selectedItemColor: Colors.amber[800],
         onTap: _onItemTapped,
-      ),
-      floatingActionButton: ConnectButton(
-        frameService: frameService,
-        onPressed: () async {
-          await frameService.connectToGlasses();
-        },
       ),
     );
   }
