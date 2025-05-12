@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:frame_sdk/frame_sdk.dart' as frame_sdk;
@@ -10,6 +9,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:ar_project/services/storage_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../models/LogEntry.dart';
+import '../models/log_entry.dart';
 import '../utility/api_call.dart';
 
 class FrameService extends WidgetsBindingObserver {
@@ -31,13 +31,14 @@ class FrameService extends WidgetsBindingObserver {
   static const _serviceUuid = '7a230001-5475-a6a4-654c-8431f6ad49c4';
   static const _txUuid = '7a230002-5475-a6a4-654c-8431f6ad49c4';
   static const _rxUuid = '7a230003-5475-a6a4-654c-8431f6ad49c4';
-  static const _batteryUuid = '7a230004-5475-a6a4-654c-8431f6ad49c4';
+  // static const _batteryUuid = '7a230004-5475-a6a4-654c-8431f6ad49c4'; // Commented out as unused
   bool _isOperationRunning = false;
   final List<Future<void> Function()> _commandQueue = [];
   bool _isProcessingQueue = false;
   String _apiEndpoint = '';
   int? _maxStringLength;
   final connectionState = ValueNotifier<bool>(false);
+  List<BluetoothService>? _cachedServices;
 
   FrameService({required this.storageService}) {
     WidgetsBinding.instance.addObserver(this);
@@ -64,94 +65,141 @@ class FrameService extends WidgetsBindingObserver {
 
   void addLogMessage(String message) {
     storageService.saveLog(LogEntry(DateTime.now(), message));
+    debugPrint('[FrameService] Log: $message');
   }
 
   Future<void> _loadApiEndpoint() async {
-    final prefs = await SharedPreferences.getInstance();
-    _apiEndpoint = prefs.getString('api_endpoint') ?? '';
-    _log.info('loaded api endpoint: $_apiEndpoint');
-    addLogMessage('loaded api endpoint: $_apiEndpoint');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _apiEndpoint = prefs.getString('api_endpoint') ?? '';
+      _log.info('loaded api endpoint: $_apiEndpoint');
+      addLogMessage('loaded api endpoint: $_apiEndpoint');
+    } catch (e) {
+      _log.severe('error loading api endpoint: $e');
+      addLogMessage('error loading api endpoint: $e');
+    }
   }
 
   Future<bool> initialize() async {
     debugPrint('[FrameService] Initializing Bluetooth...');
+    _log.info('initializing bluetooth');
 
-    if (!await Geolocator.isLocationServiceEnabled()) {
-      _log.warning('Location services are disabled');
-      addLogMessage('Please enable location services to connect to Frame glasses');
-      await Geolocator.openLocationSettings();
+    try {
       if (!await Geolocator.isLocationServiceEnabled()) {
-        _log.severe('Location services not enabled');
-        addLogMessage('Location services required for Bluetooth scanning');
-        return false;
+        _log.warning('location services are disabled');
+        addLogMessage('please enable location services to connect to frame glasses');
+        await Geolocator.openLocationSettings();
+        if (!await Geolocator.isLocationServiceEnabled()) {
+          _log.severe('location services not enabled');
+          addLogMessage('location services required for bluetooth scanning');
+          return false;
+        }
       }
-    }
 
-    int attempts = 0;
-    while (attempts < 2) {
-      attempts++;
-      var statuses = await [
-        Permission.bluetoothScan,
-        Permission.bluetoothConnect,
-        Permission.locationWhenInUse,
-        Permission.camera,
-        Permission.storage,
-      ].request();
-      if (statuses.values.every((s) => s.isGranted)) return true;
-      addLogMessage('Please grant all permissions to connect to Frame glasses');
-      await Future.delayed(const Duration(seconds: 2));
-    }
+      int attempts = 0;
+      while (attempts < 2) {
+        attempts++;
+        _log.info('requesting permissions, attempt $attempts/2');
+        var statuses = await [
+          Permission.bluetoothScan,
+          Permission.bluetoothConnect,
+          Permission.locationWhenInUse,
+          Permission.camera,
+          Permission.storage,
+        ].request();
+        var granted = statuses.entries.map((e) => '${e.key}: ${e.value}').join(', ');
+        _log.info('permission statuses: $granted');
+        addLogMessage('permission statuses: $granted');
+        if (statuses.values.every((s) => s.isGranted)) {
+          addLogMessage('all permissions granted');
+          return true;
+        }
+        if (statuses.values.any((s) => s.isPermanentlyDenied)) {
+          _log.severe('some permissions permanently denied');
+          addLogMessage('some permissions permanently denied, opening app settings');
+          await openAppSettings();
+          return false;
+        }
+        addLogMessage('please grant all permissions to connect to frame glasses');
+        await Future.delayed(const Duration(seconds: 2));
+      }
 
-    _log.severe('Failed to get required permissions');
-    addLogMessage('Failed to get required permissions');
-    return false;
+      _log.severe('failed to get required permissions after $attempts attempts');
+      addLogMessage('failed to get required permissions');
+      return false;
+    } catch (e) {
+      _log.severe('error during bluetooth initialization: $e');
+      addLogMessage('error during bluetooth initialization: $e');
+      return false;
+    }
   }
 
   Future<void> connectToGlasses() async {
-    if (_isConnected) {
-      addLogMessage('Already connected, skipping connection attempt');
-      return;
+    if (_isConnected && _discoveredDevices.isNotEmpty) {
+      try {
+        final state = await _discoveredDevices.first.device.connectionState.first;
+        _log.info('checked connection state: $state');
+        if (state == BluetoothConnectionState.connected) {
+          addLogMessage('already connected, skipping connection attempt');
+          return;
+        }
+      } catch (e) {
+        _log.severe('error checking connection state: $e');
+        addLogMessage('error checking connection state: $e');
+      }
     }
-    if (!await initialize()) throw Exception('Bluetooth initialization failed');
+    if (!await initialize()) {
+      _log.severe('bluetooth initialization failed');
+      throw Exception('bluetooth initialization failed');
+    }
 
     for (int scanAttempt = 1; scanAttempt <= 2 && !_isConnected; scanAttempt++) {
-      addLogMessage('Scanning for Frame devices (attempt $scanAttempt/2)');
+      addLogMessage('scanning for frame devices (attempt $scanAttempt/2)');
       _discoveredDevices.clear();
       await _scanDevices();
 
       if (_discoveredDevices.isEmpty) {
-        addLogMessage('No Frame devices found');
-        if (scanAttempt < 2) await Future.delayed(Duration(seconds: _retryDelaySeconds));
+        _log.warning('no frame devices found in scan attempt $scanAttempt');
+        addLogMessage('no frame devices found');
+        if (scanAttempt < 2) {
+          await Future.delayed(Duration(seconds: _retryDelaySeconds));
+        }
         continue;
       }
 
       final target = _discoveredDevices.firstWhere(
             (d) => d.rssi >= -80,
-        orElse: () => throw Exception('No Frame device with sufficient signal strength'),
+        orElse: () => throw Exception('no frame device with sufficient signal strength'),
       );
-      addLogMessage('Selected device: ${target.device.remoteId}');
+      _log.info('selected device: ${target.device.remoteId}, rssi: ${target.rssi}');
+      addLogMessage('selected device: ${target.device.remoteId}, rssi: ${target.rssi}');
 
       for (int attempt = 1; attempt <= _maxRetries && !_isConnected; attempt++) {
         try {
+          _log.info('connecting to device, attempt $attempt/$_maxRetries');
           await target.device.connect(autoConnect: false, timeout: Duration(seconds: 10));
+          addLogMessage('connected to device: ${target.device.remoteId}');
+
           bool bonded = await _ensureBonding(target.device);
-          if (!bonded) addLogMessage('Proceeding without bonding');
+          if (!bonded) {
+            addLogMessage('proceeding without bonding');
+          }
 
           await Future.delayed(Duration(milliseconds: 500));
 
-          await target.device.discoverServices();
-          addLogMessage('Services discovered');
-
           await _setupCharacteristics(target.device);
+          addLogMessage('services and characteristics set up');
 
           if (!_mtuSet) {
             try {
               int mtu = await target.device.requestMtu(247);
               _maxStringLength = mtu - 3;
-              addLogMessage('MTU set to $mtu, max string length: $_maxStringLength');
+              _log.info('mtu set to $mtu, max string length: $_maxStringLength');
+              addLogMessage('mtu set to $mtu, max string length: $_maxStringLength');
               _mtuSet = true;
             } catch (e) {
-              addLogMessage('MTU request failed: $e, using default MTU 23');
+              _log.warning('mtu request failed: $e');
+              addLogMessage('mtu request failed: $e, using default mtu 23');
               _maxStringLength = 20; // Default MTU 23 - 3
               _mtuSet = true;
             }
@@ -159,12 +207,13 @@ class FrameService extends WidgetsBindingObserver {
 
           _stateSub?.cancel();
           _stateSub = target.device.connectionState.listen((s) {
+            _log.info('connection state changed: $s');
             if (s == BluetoothConnectionState.disconnected) {
-              addLogMessage('Device disconnected');
+              addLogMessage('device disconnected');
               _updateConnectionState(false);
               Future.delayed(Duration(seconds: _retryDelaySeconds), () {
                 if (!_isConnected) {
-                  addLogMessage('Attempting to reconnect...');
+                  addLogMessage('attempting to reconnect...');
                   connectToGlasses();
                 }
               });
@@ -176,59 +225,105 @@ class FrameService extends WidgetsBindingObserver {
           await _frame!.connect();
           await _sendConnectedIndicator();
           _updateConnectionState(true);
+          _log.info('connection established successfully');
+          addLogMessage('connection established successfully');
           break;
         } catch (e) {
-          addLogMessage('Connect attempt $attempt failed: $e');
-          if (attempt < _maxRetries) await Future.delayed(Duration(seconds: _retryDelaySeconds));
-          else rethrow;
+          _log.severe('connect attempt $attempt failed: $e');
+          addLogMessage('connect attempt $attempt failed: $e');
+          if (attempt < _maxRetries) {
+            await Future.delayed(Duration(seconds: _retryDelaySeconds));
+          } else {
+            rethrow;
+          }
         }
       }
     }
   }
 
   Future<void> _scanDevices() async {
-    _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((results) {
-      for (var r in results) {
-        if (r.advertisementData.serviceUuids.contains(Guid(_serviceUuid)) ||
-            r.advertisementData.serviceUuids.contains(Guid('fe59'))) {
-          if (!_discoveredDevices.any((d) => d.device.remoteId == r.device.remoteId)) {
-            _discoveredDevices.add(r);
+    try {
+      _log.info('starting bluetooth scan');
+      addLogMessage('starting bluetooth scan');
+      _scanSub?.cancel();
+      _scanSub = FlutterBluePlus.scanResults.listen((results) {
+        for (var r in results) {
+          if (r.advertisementData.serviceUuids.contains(Guid(_serviceUuid)) ||
+              r.advertisementData.serviceUuids.contains(Guid('fe59'))) {
+            if (!_discoveredDevices.any((d) => d.device.remoteId == r.device.remoteId)) {
+              _discoveredDevices.add(r);
+              _log.info('discovered device: ${r.device.remoteId}, rssi: ${r.rssi}');
+              addLogMessage('discovered device: ${r.device.remoteId}, rssi: ${r.rssi}');
+            }
           }
         }
-      }
-    });
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(_serviceUuid), Guid('fe59')],
-      timeout: _scanTimeout,
-    );
-    await Future.delayed(_scanTimeout);
-    await FlutterBluePlus.stopScan();
-    await _scanSub?.cancel();
-    _scanSub = null;
+      });
+      await FlutterBluePlus.startScan(
+        withServices: [Guid(_serviceUuid), Guid('fe59')],
+        timeout: _scanTimeout,
+      );
+      await Future.delayed(_scanTimeout);
+      await FlutterBluePlus.stopScan();
+      await _scanSub?.cancel();
+      _scanSub = null;
+      _log.info('bluetooth scan completed, found ${_discoveredDevices.length} devices');
+      addLogMessage('bluetooth scan completed, found ${_discoveredDevices.length} devices');
+    } catch (e) {
+      _log.severe('error during bluetooth scan: $e');
+      addLogMessage('error during bluetooth scan: $e');
+      rethrow;
+    }
   }
 
   Future<bool> _ensureBonding(BluetoothDevice device) async {
-    var completer = Completer<bool>();
-    var sub = device.bondState.listen((state) {
-      if (state == BluetoothBondState.bonded) completer.complete(true);
-      else if (state == BluetoothBondState.none) completer.complete(false);
-    });
-    await device.createBond();
-    bool result = await completer.future.timeout(Duration(seconds: 20), onTimeout: () => false);
-    await sub.cancel();
-    return result;
+    try {
+      _log.info('checking bond state for device: ${device.remoteId}');
+      final bondState = await device.bondState.first;
+      if (bondState == BluetoothBondState.bonded) {
+        _log.info('device already bonded');
+        addLogMessage('device already bonded');
+        return true;
+      }
+      _log.info('creating bond with device');
+      var completer = Completer<bool>();
+      var sub = device.bondState.listen((state) {
+        _log.info('bond state changed: $state');
+        if (state == BluetoothBondState.bonded) {
+          completer.complete(true);
+        } else if (state == BluetoothBondState.none) {
+          completer.complete(false);
+        }
+      });
+      await device.createBond();
+      bool result = await completer.future.timeout(Duration(seconds: 20), onTimeout: () {
+        _log.warning('bonding timed out');
+        addLogMessage('bonding timed out');
+        return false;
+      });
+      await sub.cancel();
+      addLogMessage('bonding result: $result');
+      return result;
+    } catch (e) {
+      _log.severe('error during bonding: $e');
+      addLogMessage('error during bonding: $e');
+      return false;
+    }
   }
 
   Future<void> _setupCharacteristics(BluetoothDevice device) async {
     try {
       debugPrint('[FrameService] Discovering services...');
-      final services = await device.discoverServices();
+      _log.info('discovering services for device: ${device.remoteId}');
+      addLogMessage('discovering services');
+      final services = _cachedServices ?? await device.discoverServices();
+      _cachedServices = services;
       for (var service in services) {
-        print('Service found: ${service.uuid}');
+        _log.info('service found: ${service.uuid}');
+        debugPrint('[FrameService] Service found: ${service.uuid}');
         if (service.uuid.toString() == _serviceUuid) {
           for (var char in service.characteristics) {
-            print('Characteristic found: ${char.uuid}');
+            _log.info('characteristic found: ${char.uuid}');
+            debugPrint('[FrameService] Characteristic found: ${char.uuid}');
             if (char.uuid.toString() == _txUuid) {
               _txCharacteristic = char;
               _log.info('tx characteristic found');
@@ -241,26 +336,30 @@ class FrameService extends WidgetsBindingObserver {
               debugPrint('[FrameService] RX characteristic found');
               if (!char.isNotifying) {
                 await char.setNotifyValue(true);
+                _log.info('enabled notifications for rx characteristic');
+                addLogMessage('enabled notifications for rx characteristic');
               }
             }
           }
         }
       }
       if (_txCharacteristic == null || _rxCharacteristic == null) {
+        _log.severe('failed to find required characteristics');
+        addLogMessage('failed to find required characteristics');
         throw Exception('failed to find required characteristics');
       }
     } catch (e) {
       _log.severe('error setting up characteristics: $e');
       addLogMessage('error setting up characteristics: $e');
       debugPrint('[FrameService] Error setting up characteristics: $e');
-      throw e;
+      rethrow;
     }
   }
 
   Future<void> _sendConnectedIndicator() async {
     try {
-      // Validate x_position (1-640) and y_position
       final command = 'frame.display.text("Connected to AR Control", 10, 10)';
+      _log.info('sending connected indicator command');
       await _sendString(command);
       _log.info('sent connected indicator to glasses');
       addLogMessage('sent connected indicator to glasses');
@@ -275,17 +374,22 @@ class FrameService extends WidgetsBindingObserver {
   Future<bool> verifyConnection() async {
     if (!_isConnected || _frame == null) {
       _log.info('connection invalid: _isConnected=$_isConnected, _frame=${_frame != null}');
+      addLogMessage('connection invalid: not connected or no frame instance');
       return false;
     }
     try {
+      _log.info('verifying connection');
       final state = await _discoveredDevices.first.device.connectionState.first;
       _log.info('bluetooth connection state: $state');
+      addLogMessage('bluetooth connection state: $state');
       if (state != BluetoothConnectionState.connected) {
         _updateConnectionState(false);
+        addLogMessage('connection verification failed: not connected');
         return false;
       }
       final response = await _sendString('return "test"');
       _log.info('test response: $response');
+      addLogMessage('test response: $response');
       return response == '"test"';
     } catch (e) {
       _updateConnectionState(false);
@@ -298,6 +402,8 @@ class FrameService extends WidgetsBindingObserver {
 
   Stream<int> getBatteryLevelStream() {
     if (!_isConnected || _discoveredDevices.isEmpty) {
+      _log.warning('cannot stream battery level: not connected');
+      addLogMessage('cannot stream battery level: not connected');
       return Stream.value(0);
     }
     return Stream.periodic(Duration(seconds: 5), (_) => checkBattery())
@@ -307,15 +413,14 @@ class FrameService extends WidgetsBindingObserver {
   }
 
   Future<int?> checkBattery() async {
-    if (!_isConnected || _frame == null) {
-      _updateConnectionState(false);
-      _log.warning('cannot check battery: not connected to frame glasses');
-      addLogMessage('cannot check battery: not connected');
-      debugPrint('[FrameService] Cannot check battery: not connected');
-      return null;
-    }
-
-    return _performOperationWithRetry(() async {
+    return await _performOperationWithRetry(() async {
+      if (!_isConnected || _frame == null) {
+        _updateConnectionState(false);
+        _log.warning('cannot check battery: not connected to frame glasses');
+        addLogMessage('cannot check battery: not connected');
+        debugPrint('[FrameService] Cannot check battery: not connected');
+        return null;
+      }
       _log.info('checking battery level');
       addLogMessage('checking battery level');
       debugPrint('[FrameService] Checking battery level');
@@ -335,7 +440,7 @@ class FrameService extends WidgetsBindingObserver {
   }
 
   Future<List<int>> capturePhoto() async {
-    return _performOperationWithRetry(() async {
+    return await _performOperationWithRetry(() async {
       _log.info('capturing photo, connection state: $_isConnected');
       addLogMessage('capturing photo');
       debugPrint('[FrameService] Capturing photo, connection state: $_isConnected');
@@ -343,17 +448,19 @@ class FrameService extends WidgetsBindingObserver {
       final completer = Completer<List<int>>();
       await _enqueueCommand(() async {
         try {
-          // Use correct command for photo capture
           final response = await _sendString('return frame.camera.capture()');
           if (response.isEmpty) {
+            _log.severe('failed to capture photo: no data returned');
             throw Exception('failed to capture photo: no data returned');
           }
           final decodedData = base64Decode(response);
           _log.info('photo captured successfully, size: ${decodedData.length} bytes');
-          addLogMessage('photo captured successfully');
+          addLogMessage('photo captured successfully, size: ${decodedData.length} bytes');
           debugPrint('[FrameService] Photo captured successfully, size: ${decodedData.length} bytes');
           completer.complete(decodedData);
         } catch (e) {
+          _log.severe('error capturing photo: $e');
+          addLogMessage('error capturing photo: $e');
           completer.completeError(e);
         }
       });
@@ -365,6 +472,8 @@ class FrameService extends WidgetsBindingObserver {
   Future<Map<String, dynamic>> processPhoto(List<int> photoData) async {
     final apiService = ApiService(endpointUrl: _apiEndpoint);
     try {
+      _log.info('processing photo');
+      addLogMessage('processing photo');
       final response = await apiService.processImage(imageBytes: photoData);
       final jsonResponse = jsonDecode(response);
       _log.info('photo processed successfully: $jsonResponse');
@@ -373,12 +482,12 @@ class FrameService extends WidgetsBindingObserver {
     } catch (e) {
       _log.severe('error processing photo: $e');
       addLogMessage('error processing photo: $e');
-      return {'error': 'Error processing photo: $e'};
+      return {'error': 'error processing photo: $e'};
     }
   }
 
   Future<List<String>> listLuaScripts() async {
-    return _performOperationWithRetry(() async {
+    return await _performOperationWithRetry(() async {
       _log.info('listing lua scripts on frame glasses, connection state: $_isConnected');
       addLogMessage('listing lua scripts on frame glasses');
       debugPrint('[FrameService] Listing lua scripts on frame glasses');
@@ -407,6 +516,8 @@ class FrameService extends WidgetsBindingObserver {
             completer.complete(scripts);
           }
         } catch (e) {
+          _log.severe('error listing lua scripts: $e');
+          addLogMessage('error listing lua scripts: $e');
           completer.completeError(e);
         }
       });
@@ -416,7 +527,7 @@ class FrameService extends WidgetsBindingObserver {
   }
 
   Future<String?> downloadLuaScript(String scriptName) async {
-    return _performOperationWithRetry(() async {
+    return await _performOperationWithRetry(() async {
       _log.info('downloading lua script: $scriptName, connection state: $_isConnected');
       addLogMessage('downloading lua script: $scriptName');
       debugPrint('[FrameService] Downloading lua script: $scriptName');
@@ -437,6 +548,8 @@ class FrameService extends WidgetsBindingObserver {
             completer.complete(response);
           }
         } catch (e) {
+          _log.severe('error downloading lua script: $e');
+          addLogMessage('error downloading lua script: $e');
           completer.completeError(e);
         }
       });
@@ -455,7 +568,7 @@ class FrameService extends WidgetsBindingObserver {
       await _enqueueCommand(() async {
         try {
           if (!_isConnected || _txCharacteristic == null || _rxCharacteristic == null) {
-            throw Exception('Device is not connected or characteristics not set');
+            throw Exception('device is not connected or characteristics not set');
           }
 
           String file = scriptContent
@@ -470,11 +583,11 @@ class FrameService extends WidgetsBindingObserver {
             log: false,
           );
           if (resp != "\x02") {
-            throw Exception('Error opening file: $resp');
+            throw Exception('error opening file: $resp');
           }
 
           int index = 0;
-          int chunkSize = (_maxStringLength ?? 247) - 22;
+          int chunkSize = (_maxStringLength ?? 20) - 22;
 
           while (index < file.length) {
             if (index + chunkSize > file.length) {
@@ -486,13 +599,13 @@ class FrameService extends WidgetsBindingObserver {
             }
 
             String chunk = file.substring(index, index + chunkSize);
-
+            _log.info('writing chunk of ${chunk.length} bytes for script $scriptName');
             resp = await _sendString(
               "f:write('$chunk');print('\x02')",
               log: false,
             );
             if (resp != "\x02") {
-              throw Exception('Error writing file: $resp');
+              throw Exception('error writing file: $resp');
             }
 
             index += chunkSize;
@@ -500,7 +613,7 @@ class FrameService extends WidgetsBindingObserver {
 
           resp = await _sendString("f:close();print('\x02')", log: false);
           if (resp != "\x02") {
-            throw Exception('Error closing file: $resp');
+            throw Exception('error closing file: $resp');
           }
 
           _log.info('uploaded script $scriptName successfully');
@@ -508,6 +621,8 @@ class FrameService extends WidgetsBindingObserver {
           debugPrint('[FrameService] Uploaded script $scriptName successfully');
           completer.complete();
         } catch (e) {
+          _log.severe('error uploading lua script: $e');
+          addLogMessage('error uploading lua script: $e');
           completer.completeError(e);
         }
       });
@@ -528,11 +643,25 @@ class FrameService extends WidgetsBindingObserver {
       }
 
       if (!_isConnected || _txCharacteristic == null || _rxCharacteristic == null) {
-        throw Exception('Device is not connected or characteristics not set');
+        _log.severe('device is not connected or characteristics not set');
+        throw Exception('device is not connected or characteristics not set');
       }
 
-      if (_maxStringLength != null && string.length > _maxStringLength!) {
-        throw Exception('Payload exceeds allowed length of $_maxStringLength');
+      final maxLength = _maxStringLength ?? 20;
+      if (string.length > maxLength) {
+        _log.warning('string length ${string.length} exceeds max $maxLength, chunking');
+        addLogMessage('string length ${string.length} exceeds max $maxLength, chunking');
+        String response = '';
+        for (int i = 0; i < string.length; i += maxLength) {
+          final chunk = string.substring(i, i + maxLength > string.length ? string.length : i + maxLength);
+          _log.info('sending chunk: $chunk');
+          response += await _sendString(chunk, awaitResponse: awaitResponse, log: false);
+        }
+        if (log) {
+          _log.info('received chunked response: $response');
+          addLogMessage('received chunked response: $response');
+        }
+        return response;
       }
 
       await _txCharacteristic!.write(utf8.encode(string), withoutResponse: !awaitResponse);
@@ -554,12 +683,13 @@ class FrameService extends WidgetsBindingObserver {
     } catch (e) {
       _log.severe('failed to send string: $e');
       addLogMessage('failed to send string: $e');
-      throw Exception('Failed to send string: $e');
+      rethrow;
     }
   }
 
   Future<void> disconnect() async {
     try {
+      _log.info('disconnecting from frame glasses');
       await _frame?.disconnect();
       if (_discoveredDevices.isNotEmpty) {
         await _discoveredDevices.first.device.disconnect();
@@ -591,6 +721,7 @@ class FrameService extends WidgetsBindingObserver {
     _txCharacteristic = null;
     _rxCharacteristic = null;
     _maxStringLength = null;
+    _cachedServices = null;
     _log.info('connection state reset');
     addLogMessage('connection state reset');
     debugPrint('[FrameService] Connection state reset');
@@ -598,16 +729,17 @@ class FrameService extends WidgetsBindingObserver {
 
   Future<void> _stopScan() async {
     try {
+      _log.info('stopping bluetooth scan');
       await FlutterBluePlus.stopScan();
       _scanSub?.cancel();
       _scanSub = null;
       _log.info('scan stopped');
-      debugPrint('[FrameService] Scan stopped');
       addLogMessage('scan stopped');
+      debugPrint('[FrameService] Scan stopped');
     } catch (e) {
       _log.severe('error stopping scan: $e');
-      debugPrint('[FrameService] Error stopping scan: $e');
       addLogMessage('error stopping scan: $e');
+      debugPrint('[FrameService] Error stopping scan: $e');
     }
   }
 
@@ -616,11 +748,12 @@ class FrameService extends WidgetsBindingObserver {
       _log.severe('no device connected, cannot perform $operationName');
       addLogMessage('no device connected, cannot perform $operationName');
       debugPrint('[FrameService] No device connected, cannot perform $operationName');
-      throw Exception('No device connected');
+      throw Exception('no device connected');
     }
 
     while (_isOperationRunning) {
       _log.fine('waiting for another operation to complete before starting $operationName');
+      addLogMessage('waiting for another operation to complete: $operationName');
       await Future.delayed(const Duration(milliseconds: 100));
     }
 
@@ -634,36 +767,50 @@ class FrameService extends WidgetsBindingObserver {
             await connectToGlasses();
             await Future.delayed(const Duration(seconds: 2));
           }
+          _log.info('performing $operationName, attempt $attempt/$_maxRetries');
           return await operation().timeout(const Duration(seconds: 30));
         } catch (e) {
+
           if (e is TimeoutException) {
             _log.severe('$operationName timed out after 30 seconds (attempt $attempt/$_maxRetries)');
             addLogMessage('$operationName timed out');
             if (attempt == _maxRetries) {
               throw Exception('$operationName failed after maximum retries');
             }
-            await Future.delayed(Duration(seconds: _retryDelaySeconds));
+          } else if (e.toString().contains('GATT_INVALID_PDU')) {
+            _log.severe('GATT_INVALID_PDU during $operationName, proceeding with default MTU');
+            addLogMessage('GATT_INVALID_PDU during $operationName, proceeding');
+            if (_mtuSet) {
+              return await operation();
+            }
           } else {
             _log.severe('error during $operationName: $e');
             addLogMessage('error during $operationName: $e');
-            throw e;
+            rethrow;
           }
+          await Future.delayed(Duration(seconds: _retryDelaySeconds));
         }
       }
       throw Exception('operation failed after maximum retries');
     } finally {
       _isOperationRunning = false;
+      _log.info('operation $operationName completed');
     }
   }
 
   Future<void> _enqueueCommand(Future<void> Function() command) async {
     _commandQueue.add(command);
+    _log.info('enqueued command, queue length: ${_commandQueue.length}');
+    addLogMessage('enqueued command, queue length: ${_commandQueue.length}');
     if (!_isProcessingQueue) {
       _isProcessingQueue = true;
       while (_commandQueue.isNotEmpty) {
         final cmd = _commandQueue.removeAt(0);
         try {
+          _log.info('executing command from queue');
           await cmd().timeout(const Duration(seconds: 10));
+          _log.info('command executed successfully');
+          addLogMessage('command executed successfully');
         } catch (e) {
           _log.severe('command queue error: $e');
           addLogMessage('command queue error: $e');
@@ -671,6 +818,8 @@ class FrameService extends WidgetsBindingObserver {
         }
       }
       _isProcessingQueue = false;
+      _log.info('command queue processing completed');
+      addLogMessage('command queue processing completed');
     }
   }
 
@@ -681,6 +830,7 @@ class FrameService extends WidgetsBindingObserver {
     _rxSubscription?.cancel();
     disconnect();
     _log.info('FrameService disposed');
+    addLogMessage('FrameService disposed');
     debugPrint('[FrameService] FrameService disposed');
   }
 }
