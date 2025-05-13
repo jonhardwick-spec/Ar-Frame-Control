@@ -1,0 +1,12 @@
+Dear blackbox, within this folder you can find usefull code
+for our project, ar frame control
+
+Within this folder we have the noa app, an already working app that connects to the glasses and pushes software updates to it with advanced code for connection
+
+We have frame vision api which connects to frame and takes photos etc
+
+and we have frame flutter camera
+
+
+all of these apps in here you can use to improve our code
+and make our project work
