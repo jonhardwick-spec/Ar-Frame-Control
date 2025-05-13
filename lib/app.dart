@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 import 'services/frame_service.dart';
+import 'services/feed_service.dart';
 import 'services/storage_service.dart';
 import 'features/feed/feed_screen.dart';
 import 'features/module_control/module_control_screen.dart';
@@ -17,6 +18,7 @@ class App extends StatefulWidget {
 class _AppState extends State<App> {
   int _selectedIndex = 0;
   late FrameService frameService;
+  late FeedService feedService;
   late StorageService storageService;
   final StreamController<LogRecord> _logController = StreamController<LogRecord>.broadcast();
   StreamSubscription<LogRecord>? _logSubscription;
@@ -26,6 +28,7 @@ class _AppState extends State<App> {
     super.initState();
     storageService = StorageService();
     frameService = FrameService(storageService: storageService);
+    feedService = FeedService(storageService: storageService, frameService: frameService);
     _setupLogging();
   }
 
@@ -61,8 +64,8 @@ class _AppState extends State<App> {
       body: IndexedStack(
         index: _selectedIndex,
         children: [
-          FeedScreen(frameService: frameService),
-          ModuleControlScreen(frameService: frameService, storageService: storageService),
+          FeedScreen(frameService: frameService, feedService: feedService),
+          ModuleControlScreen(frameService: frameService, feedService: feedService, storageService: storageService),
           ConsoleLogScreen(storageService: storageService),
         ],
       ),

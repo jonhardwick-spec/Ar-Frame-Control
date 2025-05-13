@@ -2,19 +2,23 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:ar_project/services/frame_service.dart' as frame_service;
+import 'package:ar_project/services/feed_service.dart';
 import 'package:ar_project/services/storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../../models/LogEntry.dart';
+import '../../models/log_entry.dart';
 
 class ModuleControlScreen extends StatefulWidget {
   final frame_service.FrameService frameService;
+  final FeedService feedService;
   final StorageService storageService;
 
   const ModuleControlScreen({
     Key? key,
     required this.frameService,
+    required this.feedService,
     required this.storageService,
   }) : super(key: key);
 
@@ -27,7 +31,7 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
   String? _selectedScript;
   bool _isLoading = false;
   String? _errorMessage;
-  List<int>? _photoData;
+  Uint8List? _photoData;
   String? _scriptDownloadPath;
   final ValueNotifier<String?> _selectedScriptNotifier = ValueNotifier(null);
 
@@ -107,12 +111,12 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       _luaScripts = await widget.frameService.listLuaScripts();
     } catch (e) {
       setState(() {
-        _errorMessage = e.toString();
-      });
+          _errorMessage = e.toString();
+        });
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+    setState(() {
+    _isLoading = false;
+    });
     }
   }
 
@@ -123,7 +127,13 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       _photoData = null;
     });
     try {
-      _photoData = await widget.frameService.capturePhoto();
+      final (imageData, _) = await widget.feedService.capturePhoto();
+      setState(() {
+        _photoData = imageData;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Photo captured: ${imageData.length} bytes')),
+      );
     } catch (e) {
       setState(() {
         _errorMessage = e.toString();
@@ -147,19 +157,13 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       _errorMessage = null;
     });
     try {
-      String? content = await widget.frameService.downloadLuaScript(_selectedScript!);
-      if (content != null) {
-        final filePath = '$_scriptDownloadPath/$_selectedScript.lua';
-        final file = File(filePath);
-        await file.writeAsString(content);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Script saved to $filePath')),
-        );
-      } else {
-        setState(() {
-          _errorMessage = 'Script not found';
-        });
-      }
+      await widget.frameService.downloadLuaScript(_selectedScript!);
+      final filePath = '$_scriptDownloadPath/$_selectedScript';
+      final file = File(filePath);
+      await file.writeAsString(_selectedScript!);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Script saved to $filePath')),
+      );
     } catch (e) {
       setState(() {
         _errorMessage = e.toString();
@@ -349,7 +353,7 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
                                   border: Border.all(color: Colors.grey),
                                 ),
                                 child: Image.memory(
-                                  Uint8List.fromList(_photoData!),
+                                  _photoData!,
                                   fit: BoxFit.contain,
                                   width: double.infinity,
                                 ),

@@ -24,32 +24,37 @@ class ForegroundServiceManager {
   }
 
   Future<void> startForegroundService() async {
-    FlutterForegroundTask.init(
-      androidNotificationOptions: AndroidNotificationOptions(
-        channelId: 'ar_frame_service',
-        channelName: 'AR Frame Service',
-        channelDescription: 'Keeps AR glasses connected in the background',
-        channelImportance: NotificationChannelImportance.LOW,
-        priority: NotificationPriority.HIGH,
-      ),
-      iosNotificationOptions: IOSNotificationOptions(
-        showNotification: true,
-        playSound: false,
-      ),
-      foregroundTaskOptions: ForegroundTaskOptions(
-        interval: 5000,
-        isOnceEvent: false,
-        autoRunOnBoot: true,
-        allowWakeLock: true,
-        allowWifiLock: true,
-      ),
-    );
+    try {
+      FlutterForegroundTask.init(
+        androidNotificationOptions: AndroidNotificationOptions(
+          channelId: 'ar_frame_service',
+          channelName: 'AR Frame Service',
+          channelDescription: 'Keeps AR glasses connected in the background',
+          channelImportance: NotificationChannelImportance.LOW,
+          priority: NotificationPriority.HIGH,
+        ),
+        iosNotificationOptions: const IOSNotificationOptions(
+          showNotification: true,
+          playSound: false,
+        ),
+        foregroundTaskOptions: const ForegroundTaskOptions(
+          interval: 5000,
+          isOnceEvent: false,
+          autoRunOnBoot: true,
+          allowWakeLock: true,
+          allowWifiLock: true,
+        ),
+      );
 
-    await FlutterForegroundTask.startService(
-      notificationTitle: 'AR Frame Service',
-      notificationText: 'Maintaining connection to AR glasses',
-      callback: foregroundTaskCallback,
-    );
+      await FlutterForegroundTask.startService(
+        notificationTitle: 'AR Frame Service',
+        notificationText: 'Maintaining connection to AR glasses',
+        callback: foregroundTaskCallback,
+      );
+      _log.info('Foreground service started');
+    } catch (e) {
+      _log.severe('Error starting foreground service: $e');
+    }
   }
 
   static void foregroundTaskCallback() {
@@ -57,26 +62,30 @@ class ForegroundServiceManager {
   }
 
   Future<void> stopForegroundService() async {
-    await FlutterForegroundTask.stopService();
-    _receivePort?.close();
+    try {
+      await FlutterForegroundTask.stopService();
+      _receivePort?.close();
+      _log.info('Foreground service stopped');
+    } catch (e) {
+      _log.severe('Error stopping foreground service: $e');
+    }
   }
 }
 
 class _ForegroundTaskHandler extends TaskHandler {
   @override
-  Future<void> onStart(DateTime timestamp, SendPort? sendPort) async {
+  void onStart(DateTime timestamp, SendPort? sendPort) {
     _log.info("Starting foreground task");
   }
 
   @override
-  Future<void> onRepeatEvent(DateTime timestamp, SendPort? sendPort) async {
+  void onRepeatEvent(DateTime timestamp, SendPort? sendPort) {
     _log.info("Foreground repeat event triggered");
     sendPort?.send('reconnect');
   }
 
   @override
-  Future<void> onDestroy(DateTime timestamp, SendPort? sendPort) async {
+  void onDestroy(DateTime timestamp, SendPort? sendPort) {
     _log.info("Destroying foreground task");
-    await FlutterForegroundTask.stopService();
   }
 }
