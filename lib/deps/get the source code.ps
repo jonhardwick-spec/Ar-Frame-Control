@@ -1,0 +1,42 @@
+# Get all .dart files in the current directory and subdirectories
+$dartFiles = Get-ChildItem -Path . -Recurse -Include *.dart
+
+# Output file
+$outputFile = "sourecode.txt"
+
+# Clear the output file if it exists
+if (Test-Path $outputFile) {
+    Clear-Content $outputFile
+}
+
+# Process each .dart file
+foreach ($file in $dartFiles) {
+    # Read the file content
+    $content = Get-Content -Path $file.FullName -Raw
+    
+    # Extract class names (assuming standard Dart class syntax)
+    $classNames = [regex]::Matches($content, 'class\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value }
+    
+    if ($classNames) {
+        # Add a header for the file
+        Add-Content -Path $outputFile -Value "===== File: $($file.FullName) ====="
+        
+        # Add each class with its content
+        foreach ($className in $classNames) {
+            Add-Content -Path $outputFile -Value "----- Class: $className -----"
+            # Extract the class content (approximate, from class declaration to end of class)
+            $classPattern = "class\s+$className\s*\{[^}]*\}(?:\s*class|$)"
+            $classMatch = [regex]::Match($content, $classPattern, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+            if ($classMatch.Success) {
+                Add-Content -Path $outputFile -Value $classMatch.Value
+            } else {
+                # If regex fails, add the entire file content as fallback
+                Add-Content -Path $outputFile -Value $content
+            }
+            Add-Content -Path $outputFile -Value "`n"
+        }
+        Add-Content -Path $outputFile -Value "`n"
+    }
+}
+
+Write-Host "Combined .dart classes into $outputFile"

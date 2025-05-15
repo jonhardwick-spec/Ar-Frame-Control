@@ -2,7 +2,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:ar_project/services/frame_service.dart' as frame_service;
-import 'package:ar_project/services/feed_service.dart';
 import 'package:ar_project/services/storage_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:path_provider/path_provider.dart';
@@ -12,13 +11,11 @@ import '../../models/log_entry.dart';
 
 class ModuleControlScreen extends StatefulWidget {
   final frame_service.FrameService frameService;
-  final FeedService feedService;
   final StorageService storageService;
 
   const ModuleControlScreen({
     Key? key,
     required this.frameService,
-    required this.feedService,
     required this.storageService,
   }) : super(key: key);
 
@@ -111,12 +108,12 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       _luaScripts = await widget.frameService.listLuaScripts();
     } catch (e) {
       setState(() {
-          _errorMessage = e.toString();
-        });
+        _errorMessage = e.toString();
+      });
     } finally {
-    setState(() {
-    _isLoading = false;
-    });
+      setState(() {
+        _isLoading = false;
+      });
     }
   }
 
@@ -127,7 +124,7 @@ class _ModuleControlScreenState extends State<ModuleControlScreen> {
       _photoData = null;
     });
     try {
-      final (imageData, _) = await widget.feedService.capturePhoto();
+      final (imageData, _) = await widget.frameService.capturePhoto();
       setState(() {
         _photoData = imageData;
       });
@@ -444,7 +441,7 @@ class BatteryStatusWidget extends StatelessWidget {
           stream: frameService.getBatteryLevelStream(),
           initialData: 0,
           builder: (context, snapshot) {
-            final batteryLevel = snapshot.data ?? 0;
+            final batteryLevel = snapshot.data ?? 0; // Use 0 if null
             return Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [

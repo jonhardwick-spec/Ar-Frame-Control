@@ -7,17 +7,17 @@ import 'package:frame_ble/brilliant_device.dart';
 import 'package:frame_ble/brilliant_scanned_device.dart';
 import 'package:frame_msg/rx/photo.dart';
 import 'package:frame_msg/tx/capture_settings.dart';
-import 'package:frame_msg/tx/code.dart';
 import 'package:frame_msg/tx/auto_exp_settings.dart';
 import 'package:frame_msg/tx/manual_exp_settings.dart';
-import 'package:frame_msg/tx/plain_text.dart';
 import 'package:logging/logging.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:ar_project/services/storage_service.dart';
 import '../models/LogEntry.dart';
+import '../models/log_entry.dart';
+import '../utility/api_call.dart';
 
-enum ConnectionState { connected, disconnected }
+enum ConnectionState { connected, disconnected } // Fallback enum
 
 class FrameService extends WidgetsBindingObserver {
   final Logger _log = Logger('FrameService');
@@ -28,11 +28,9 @@ class FrameService extends WidgetsBindingObserver {
   StreamSubscription<List<int>>? _rxAppData;
   StreamSubscription<String>? _rxStdOut;
   final StorageService storageService;
-  static const int _maxRetries = 5;
-  static const int _retryDelaySeconds = 1;
+  static const int _maxRetries = 3;
+  static const int _retryDelaySeconds = 2;
   static const Duration _scanTimeout = Duration(seconds: 15);
-  static const Duration _stringTimeout = Duration(seconds: 20);
-  static const Duration _photoTimeout = Duration(seconds: 60);
   bool _mtuSet = false;
   BrilliantScannedDevice? _discoveredDevice;
   final List<Future<void> Function()> _commandQueue = [];
@@ -41,9 +39,8 @@ class FrameService extends WidgetsBindingObserver {
   String _apiEndpoint = '';
   int? _maxStringLength;
   final connectionState = ValueNotifier<bool>(false);
-  final StreamController<(Uint8List, ImageMetadata)> _photoController = StreamController.broadcast();
 
-  // exposure settings
+  // Camera settings from FeedService
   bool isAutoExposure = true;
   int qualityIndex = 4;
   final List<String> qualityValues = ['VERY_LOW', 'LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
@@ -70,7 +67,7 @@ class FrameService extends WidgetsBindingObserver {
   FrameService({required this.storageService}) {
     WidgetsBinding.instance.addObserver(this);
     _log.info('FrameService initialized');
-    debugPrint('[FrameService] FrameService initialized');
+    addLogMessage('FrameService initialized');
     _updateConnectionState(false);
     _loadApiEndpoint();
   }
@@ -97,7 +94,7 @@ class FrameService extends WidgetsBindingObserver {
 
   Future<void> _loadApiEndpoint() async {
     try {
-      _apiEndpoint = 'https://api.example.com';
+      _apiEndpoint = 'https://api.example.com'; // Stub
       _log.info('loaded api endpoint: $_apiEndpoint');
       addLogMessage('loaded api endpoint: $_apiEndpoint');
     } catch (e) {
@@ -222,7 +219,7 @@ class FrameService extends WidgetsBindingObserver {
         await _frame!.sendBreakSignal();
         await Future.delayed(Duration(milliseconds: 500));
 
-        final response = await _sendString(
+        final response = await _frame!.sendString(
           'print("Connected to Frame " .. frame.FIRMWARE_VERSION .. ", Mem: " .. tostring(collectgarbage("count")))',
           awaitResponse: true,
         );
@@ -239,7 +236,7 @@ class FrameService extends WidgetsBindingObserver {
         _log.severe('connect attempt $attempt failed: $e');
         addLogMessage('connect attempt $attempt failed: $e');
         if (attempt == _maxRetries) rethrow;
-        await Future.delayed(Duration(seconds: _retryDelaySeconds * attempt));
+        await Future.delayed(Duration(seconds: _retryDelaySeconds));
       }
     }
   }
@@ -259,7 +256,7 @@ class FrameService extends WidgetsBindingObserver {
         await _frame!.sendBreakSignal();
         await Future.delayed(Duration(milliseconds: 500));
 
-        final response = await _sendString(
+        final response = await _frame!.sendString(
           'print("Connected to Frame " .. frame.FIRMWARE_VERSION .. ", Mem: " .. tostring(collectgarbage("count")))',
           awaitResponse: true,
         );
@@ -313,7 +310,7 @@ class FrameService extends WidgetsBindingObserver {
 
   Future<void> _sendConnectedIndicator() async {
     try {
-      await _sendString(
+      await _frame!.sendString(
         'frame.display.text("Connected to ARC",1,1) frame.display.show()',
         awaitResponse: false,
       );
@@ -334,9 +331,12 @@ class FrameService extends WidgetsBindingObserver {
     try {
       _log.info('verifying connection');
       addLogMessage('verifying connection');
-      final response = await _sendString('return "test"', awaitResponse: true);
+      final response = await _sendString('print("test")');
       _log.info('test response: $response');
       addLogMessage('test response: $response');
+      if (response == '"test"') {
+        _updateConnectionState(true);
+      }
       return response == '"test"';
     } catch (e) {
       _updateConnectionState(false);
@@ -351,48 +351,40 @@ class FrameService extends WidgetsBindingObserver {
         bool awaitResponse = true,
         bool log = true,
       }) async {
-    if (!_isConnected || _frame == null) {
-      throw Exception('device is not connected');
-    }
-    final maxLength = _maxStringLength ?? 20;
-    if (string.length > maxLength) {
-      _log.warning('string length ${string.length} exceeds max $maxLength, chunking');
-      addLogMessage('string length ${string.length} exceeds max $maxLength, chunking');
-      String response = '';
-      for (int i = 0; i < string.length; i += maxLength) {
-        final chunk = string.substring(i, i + maxLength > string.length ? string.length : i + maxLength);
-        response += await _sendString(chunk, awaitResponse: awaitResponse, log: false);
-      }
+    try {
       if (log) {
-        _log.info('received chunked response: $response');
-        addLogMessage('received chunked response: $response');
+        _log.info('sending string: $string');
+        addLogMessage('sending string: $string');
       }
-      return response;
-    }
-
-    for (int attempt = 1; attempt <= _maxRetries; attempt++) {
-      try {
+      if (!_isConnected || _frame == null) {
+        throw Exception('device is not connected');
+      }
+      final maxLength = _maxStringLength ?? 20;
+      if (string.length > maxLength) {
+        _log.warning('string length ${string.length} exceeds max $maxLength, chunking');
+        addLogMessage('string length ${string.length} exceeds max $maxLength, chunking');
+        String response = '';
+        for (int i = 0; i < string.length; i += maxLength) {
+          final chunk = string.substring(i, i + maxLength > string.length ? string.length : i + maxLength);
+          response += await _sendString(chunk, awaitResponse: awaitResponse, log: false);
+        }
         if (log) {
-          _log.info('sending string (attempt $attempt/$_maxRetries): $string');
-          addLogMessage('sending string (attempt $attempt/$_maxRetries): $string');
+          _log.info('received chunked response: $response');
+          addLogMessage('received chunked response: $response');
         }
-        final response = await _frame!.sendString(string, awaitResponse: awaitResponse).timeout(
-          _stringTimeout,
-          onTimeout: () => throw TimeoutException('string send timed out after ${_stringTimeout.inSeconds}s'),
-        );
-        if (log && awaitResponse) {
-          _log.info('received string: $response');
-          addLogMessage('received string: $response');
-        }
-        return response ?? '';
-      } catch (e) {
-        _log.severe('send string attempt $attempt failed: $e');
-        addLogMessage('send string attempt $attempt failed: $e');
-        if (attempt == _maxRetries) rethrow;
-        await Future.delayed(Duration(seconds: _retryDelaySeconds << (attempt - 1)));
+        return response;
       }
+      final response = await _frame!.sendString(string, awaitResponse: awaitResponse);
+      if (log && awaitResponse) {
+        _log.info('received string: $response');
+        addLogMessage('received string: $response');
+      }
+      return response ?? '';
+    } catch (e) {
+      _log.severe('failed to send string: $e');
+      addLogMessage('failed to send string: $e');
+      rethrow;
     }
-    throw Exception('failed to send string after $_maxRetries attempts');
   }
 
   Future<void> disconnect() async {
@@ -401,6 +393,8 @@ class FrameService extends WidgetsBindingObserver {
       addLogMessage('disconnecting from frame glasses');
       if (_frame != null) {
         await _frame!.sendBreakSignal();
+        await Future.delayed(Duration(milliseconds: 500));
+        await _frame!.sendResetSignal();
         await Future.delayed(Duration(milliseconds: 500));
         await _frame!.disconnect();
       }
@@ -467,7 +461,7 @@ class FrameService extends WidgetsBindingObserver {
             await Future.delayed(const Duration(seconds: 2));
           }
           _log.info('performing $operationName, attempt $attempt/$_maxRetries');
-          return await operation().timeout(Duration(seconds: 30));
+          return await operation().timeout(const Duration(seconds: 30));
         } catch (e) {
           if (e is TimeoutException) {
             _log.severe('$operationName timed out after 30 seconds (attempt $attempt/$_maxRetries)');
@@ -478,7 +472,7 @@ class FrameService extends WidgetsBindingObserver {
             addLogMessage('error during $operationName: $e');
             rethrow;
           }
-          await Future.delayed(Duration(seconds: _retryDelaySeconds << (attempt - 1)));
+          await Future.delayed(Duration(seconds: _retryDelaySeconds));
         }
       }
       throw Exception('operation failed after maximum retries');
@@ -512,73 +506,71 @@ class FrameService extends WidgetsBindingObserver {
     }
   }
 
-  Future<void> connectToGlasses() async {
+  // Integrated FeedService methods
+  Future<void> connectToGlasses({String? deviceId}) async {
+    if (deviceId != null) {
+      _log.warning('Specific device ID connection not implemented, scanning instead');
+      addLogMessage('Specific device ID connection not implemented, scanning instead');
+    }
     await scanForFrame();
   }
 
   Future<List<String>> listLuaScripts() async {
-    try {
-      final response = await _sendString('return table.concat(frame.fs.listdir("/"), ",")');
-      final scripts = response.split(',').where((s) => s.endsWith('.lua')).toList();
-      _log.info('lua scripts found: $scripts');
-      addLogMessage('lua scripts found: $scripts');
-      return scripts;
-    } catch (e) {
-      _log.severe('failed to list lua scripts: $e');
-      addLogMessage('failed to list lua scripts: $e');
-      return [];
-    }
+    return await _performOperationWithRetry(() async {
+      final response = await _sendString('print(table.concat(fs.list("/")), ",")');
+      return response.split(',').where((s) => s.endsWith('.lua')).toList();
+    }, 'listLuaScripts');
   }
 
-  Future<void> downloadLuaScript(String scriptName) async {
-    try {
-      final response = await _sendString('return frame.fs.read("/$scriptName")');
+  Future<String> downloadLuaScript(String scriptName) async {
+    return await _performOperationWithRetry(() async {
+      final response = await _sendString('return fs.read("/$scriptName")');
       await storageService.saveLog(LogEntry(DateTime.now(), 'Downloaded script: $scriptName'));
-      if (
-      response.isNotEmpty){
-      }
-      _log.info('downloaded script: $scriptName');
-      addLogMessage('downloaded script: $scriptName');
-    } catch (e) {
-      _log.severe('failed to download script $scriptName: $e');
-      addLogMessage('failed to download script $scriptName: $e');
-    }
+      return response;
+    }, 'downloadLuaScript');
   }
 
   Stream<int> getBatteryLevelStream() {
+    if (_discoveredDevice == null) {
+      return Stream.value(0);
+    }
     return Stream.periodic(const Duration(seconds: 20), (_) async {
       try {
-        final response = await _sendString('return frame.battery_level()');
-        return int.parse(response);
+        final response = await _sendString('print(frame.battery_level())');
+        _log.info('Battery response: $response');
+        // Handle decimal strings like "96.0"
+        final level = double.parse(response.trim()).toInt();
+        return level;
       } catch (e) {
-        _log.severe('failed to get battery level: $e');
-        addLogMessage('failed to get battery level: $e');
-        return -1;
+        _log.severe('Battery stream error: $e');
+        addLogMessage('Battery stream error: $e');
+        return 0;
       }
     }).asyncMap((future) => future);
   }
 
-  Stream<(Uint8List, ImageMetadata)> get photoStream => _photoController.stream;
-
-  Future<void> onRun() async {
-    try {
-      var msg = TxPlainText(text: 'Camera Ready');
-      await _frame!.sendMessage(0x0a, msg.pack());
-      _log.info('sent initial message: Camera Ready');
-      addLogMessage('sent initial message: Camera Ready');
-    } catch (e) {
-      _log.severe('failed to initialize: $e');
-      addLogMessage('failed to initialize: $e');
-      rethrow;
+  Future<BrilliantDevice?> _getFrame() async {
+    if (!connectionState.value) {
+      _log.warning('frame not connected, attempting to reconnect');
+      addLogMessage('frame not connected, attempting to reconnect');
+      await reconnectFrame();
+      await Future.delayed(Duration(seconds: 2));
+      if (!connectionState.value) {
+        _log.severe('no frame device available after reconnect');
+        addLogMessage('no frame device available after reconnect');
+        throw Exception('no frame device available');
+      }
     }
+    if (_frame == null) {
+      _log.severe('no frame device available');
+      addLogMessage('no frame device available');
+      throw Exception('no frame device available');
+    }
+    return _frame;
   }
 
   Future<void> updateAutoExpSettings() async {
-    if (!_isConnected || _frame == null) {
-      _log.warning('cannot update auto exposure: not connected');
-      addLogMessage('cannot update auto exposure: not connected');
-      return;
-    }
+    final frame = await _getFrame();
     final autoExpSettings = TxAutoExpSettings(
       meteringIndex: meteringIndex,
       exposure: exposure,
@@ -588,22 +580,13 @@ class FrameService extends WidgetsBindingObserver {
       whiteBalanceSpeed: whiteBalanceSpeed,
       rgbGainLimit: rgbGainLimit,
     );
-    await _performOperationWithRetry(
-          () async {
-        await _frame!.sendMessage(0x0e, autoExpSettings.pack());
-      },
-      'update auto exposure settings',
-    );
+    await frame!.sendMessage(0x0e, autoExpSettings.pack());
     _log.info('auto exposure settings updated');
     addLogMessage('auto exposure settings updated');
   }
 
   Future<void> updateManualExpSettings() async {
-    if (!_isConnected || _frame == null) {
-      _log.warning('cannot update manual exposure: not connected');
-      addLogMessage('cannot update manual exposure: not connected');
-      return;
-    }
+    final frame = await _getFrame();
     final manualExpSettings = TxManualExpSettings(
       manualShutter: manualShutter,
       manualAnalogGain: manualAnalogGain,
@@ -611,222 +594,175 @@ class FrameService extends WidgetsBindingObserver {
       manualGreenGain: manualGreenGain,
       manualBlueGain: manualBlueGain,
     );
-    await _performOperationWithRetry(
-          () async {
-        await _frame!.sendMessage(0x0f, manualExpSettings.pack());
-      },
-      'update manual exposure settings',
-    );
+    await frame!.sendMessage(0x0f, manualExpSettings.pack());
     _log.info('manual exposure settings updated');
     addLogMessage('manual exposure settings updated');
   }
 
   Future<void> sendExposureSettings() async {
-    if (!_isConnected) {
+    if (!connectionState.value) {
       _log.warning('cannot send exposure settings: not connected');
       addLogMessage('cannot send exposure settings: not connected');
       return;
     }
-    if (isAutoExposure) {
-      await updateAutoExpSettings();
-    } else {
-      await updateManualExpSettings();
-    }
-  }
-
-  Future<bool> _checkCharacteristicAvailability() async {
     try {
-      await _frame!.sendMessage(0x01, TxCode(value: 0x01).pack());
-      _log.info('characteristic check passed');
-      addLogMessage('characteristic check passed');
-      return true;
+      if (isAutoExposure) {
+        await updateAutoExpSettings();
+      } else {
+        await updateManualExpSettings();
+      }
     } catch (e) {
-      _log.severe('characteristic check failed: $e');
-      addLogMessage('characteristic check failed: $e');
-      return false;
+      _log.severe('error sending exposure settings: $e');
+      addLogMessage('error sending exposure settings: $e');
+      rethrow;
     }
   }
 
-  Future<(Uint8List, ImageMetadata)?> capturePhoto() async {
-    if (!_isConnected || _frame == null) {
-      _log.warning('cannot capture photo: not connected');
-      addLogMessage('cannot capture photo: not connected');
-      return null;
+  Future<(Uint8List, ImageMetadata)> capturePhoto() async {
+    final frame = await _getFrame();
+    try {
+      _log.info('Starting photo capture');
+      addLogMessage('Starting photo capture');
+
+      // Apply exposure settings
+      await sendExposureSettings();
+
+      // Prepare metadata
+      ImageMetadata meta;
+      var currQualIndex = qualityIndex;
+      var currRes = resolution;
+      var currPan = pan;
+
+      if (isAutoExposure) {
+        meta = AutoExpImageMetadata(
+          quality: qualityValues[currQualIndex],
+          resolution: currRes,
+          pan: currPan,
+          metering: meteringValues[meteringIndex],
+          exposure: exposure,
+          exposureSpeed: exposureSpeed,
+          shutterLimit: shutterLimit,
+          analogGainLimit: analogGainLimit,
+          whiteBalanceSpeed: whiteBalanceSpeed,
+          rgbGainLimit: rgbGainLimit,
+        );
+      } else {
+        meta = ManualExpImageMetadata(
+          quality: qualityValues[currQualIndex],
+          resolution: currRes,
+          pan: currPan,
+          shutter: manualShutter,
+          analogGain: manualAnalogGain,
+          redGain: manualRedGain,
+          greenGain: manualGreenGain,
+          blueGain: manualBlueGain,
+        );
+      }
+
+      // Send capture command
+      var takePhoto = TxCaptureSettings(
+        resolution: currRes,
+        qualityIndex: currQualIndex,
+        pan: currPan,
+        raw: RxPhoto.hasJpegHeader(qualityValues[currQualIndex], currRes),
+      );
+      _stopwatch.reset();
+      _stopwatch.start();
+      await frame!.sendMessage(0x0d, takePhoto.pack());
+      _log.info('Sent photo capture command (0x0d)');
+      addLogMessage('Sent photo capture command');
+
+      // Wait for photo response
+      var photoStream = RxPhoto(
+        quality: qualityValues[currQualIndex],
+        resolution: currRes,
+        isRaw: RxPhoto.hasJpegHeader(qualityValues[currQualIndex], currRes),
+        upright: upright,
+      ).attach(frame.dataResponse);
+
+      final imageData = await photoStream.first.timeout(
+        const Duration(seconds: 60),
+        onTimeout: () => throw TimeoutException('Photo capture timed out after 60 seconds'),
+      );
+
+      _stopwatch.stop();
+      _log.info('Received image data: ${imageData.length} bytes, time elapsed: ${_stopwatch.elapsedMilliseconds}ms');
+      addLogMessage('Received image data: ${imageData.length} bytes');
+
+      // Update metadata
+      if (meta is AutoExpImageMetadata) {
+        meta.size = imageData.length;
+        meta.elapsedTimeMs = _stopwatch.elapsedMilliseconds;
+      } else if (meta is ManualExpImageMetadata) {
+        meta.size = imageData.length;
+        meta.elapsedTimeMs = _stopwatch.elapsedMilliseconds;
+      }
+
+      _log.info('Photo captured successfully, size: ${imageData.length} bytes, elapsed: ${_stopwatch.elapsedMilliseconds}ms');
+      addLogMessage('Photo captured successfully, size: ${imageData.length} bytes');
+      return (imageData, meta);
+    } catch (e) {
+      _log.severe('Error capturing photo: $e');
+      addLogMessage('Error capturing photo: $e');
+      rethrow;
     }
-
-    return await _performOperationWithRetry<(Uint8List, ImageMetadata)?>(
-          () async {
-        try {
-          if (!await _checkCharacteristicAvailability()) {
-            throw Exception('BLE characteristic unavailable');
-          }
-
-          final testResponse = await _sendString('return "test"');
-          _log.info('device test response: $testResponse');
-          addLogMessage('device test response: $testResponse');
-          if (testResponse != '"test"') {
-            throw Exception('device not responsive');
-          }
-
-          await sendExposureSettings();
-
-          ImageMetadata meta;
-          if (isAutoExposure) {
-            meta = AutoExpImageMetadata(
-              quality: qualityValues[qualityIndex],
-              resolution: resolution,
-              pan: pan,
-              metering: meteringValues[meteringIndex],
-              exposure: exposure,
-              exposureSpeed: exposureSpeed,
-              shutterLimit: shutterLimit,
-              analogGainLimit: analogGainLimit,
-              whiteBalanceSpeed: whiteBalanceSpeed,
-              rgbGainLimit: rgbGainLimit,
-            );
-          } else {
-            meta = ManualExpImageMetadata(
-              quality: qualityValues[qualityIndex],
-              resolution: resolution,
-              pan: pan,
-              shutter: manualShutter,
-              analogGain: manualAnalogGain,
-              redGain: manualRedGain,
-              greenGain: manualGreenGain,
-              blueGain: manualBlueGain,
-            );
-          }
-
-          bool requestRaw = RxPhoto.hasJpegHeader(qualityValues[qualityIndex], resolution);
-          _stopwatch.reset();
-          _stopwatch.start();
-
-          await _frame!.sendMessage(
-            _startListeningFlag,
-            TxCaptureSettings(
-              resolution: resolution,
-              qualityIndex: qualityIndex,
-              pan: pan,
-              raw: requestRaw,
-            ).pack(),
-          );
-          _log.info('sent start listening command for photo capture');
-          addLogMessage('sent start listening command for photo capture');
-
-          Uint8List imageData = await RxPhoto(
-            quality: qualityValues[qualityIndex],
-            resolution: resolution,
-            isRaw: requestRaw,
-            upright: upright,
-          ).attach(_frame!.dataResponse).first.timeout(_photoTimeout, onTimeout: () {
-            throw TimeoutException('photo capture timed out after ${_photoTimeout.inSeconds}s');
-          });
-
-          await _frame!.sendMessage(_stopListeningFlag, TxCode(value: _stopListeningFlag).pack());
-          _log.info('sent stop listening command after photo capture');
-          addLogMessage('sent stop listening command after photo capture');
-
-          _stopwatch.stop();
-          meta.size = imageData.length;
-          meta.elapsedTimeMs = _stopwatch.elapsedMilliseconds;
-          _log.info('photo captured successfully, size: ${imageData.length} bytes, elapsed: ${_stopwatch.elapsedMilliseconds}ms');
-          addLogMessage('photo captured successfully, size: ${imageData.length} bytes');
-
-          _photoController.add((imageData, meta));
-          return (imageData, meta);
-        } catch (e) {
-          _log.severe('error capturing photo: $e');
-          addLogMessage('error capturing photo: $e');
-          rethrow;
-        }
-      },
-      'capture photo',
-    );
-  }
-
-  Future<void> _startLiveFeed() async {
-    if (!_isConnected || _frame == null) {
-      _log.severe('no frame device available for live feed');
-      addLogMessage('no frame device available for live feed');
-      throw Exception('no frame device available');
-    }
-
-    await _performOperationWithRetry(
-          () async {
-        try {
-          if (!await _checkCharacteristicAvailability()) {
-            throw Exception('BLE characteristic unavailable');
-          }
-          await sendExposureSettings();
-          await _frame!.sendMessage(
-            _startListeningFlag,
-            TxCaptureSettings(
-              resolution: resolution,
-              qualityIndex: qualityIndex,
-              pan: pan,
-              raw: false,
-            ).pack(),
-          );
-          _log.info('sent start listening command for live feed');
-          addLogMessage('sent start listening command for live feed');
-        } catch (e) {
-          _log.severe('error starting live feed: $e');
-          addLogMessage('error starting live feed: $e');
-          rethrow;
-        }
-      },
-      'start live feed',
-    );
   }
 
   Stream<Uint8List> getLiveFeedStream() async* {
-    if (!_isConnected || _frame == null) {
-      _log.severe('no frame device available for live feed');
-      addLogMessage('no frame device available for live feed');
-      throw Exception('no frame device available');
+    final frame = await _getFrame();
+    if (frame == null) {
+      _log.severe('No frame device available for live feed');
+      addLogMessage('No frame device available for live feed');
+      throw Exception('No frame device available');
     }
-
     try {
-      await _startLiveFeed();
+      // Start continuous capture
+      await frame.sendMessage(
+        _startListeningFlag,
+        TxCaptureSettings(
+          resolution: resolution,
+          qualityIndex: qualityIndex,
+          pan: pan,
+          raw: false,
+        ).pack(),
+      );
+      _log.info('Sent start listening command for live feed');
+      addLogMessage('Sent start listening command for live feed');
+
       yield* RxPhoto(
         quality: qualityValues[qualityIndex],
         resolution: resolution,
         isRaw: false,
         upright: upright,
-      ).attach(_frame!.dataResponse).asBroadcastStream();
+      ).attach(frame.dataResponse).asBroadcastStream();
     } catch (e) {
-      _log.severe('error streaming live feed: $e');
-      addLogMessage('error streaming live feed: $e');
+      _log.severe('Error starting live feed: $e');
+      addLogMessage('Error starting live feed: $e');
       rethrow;
     }
   }
 
   Future<void> stopLiveFeed() async {
-    if (!_isConnected || _frame == null) {
-      _log.warning('no frame device available to stop live feed');
-      addLogMessage('no frame device available to stop live feed');
-      return;
-    }
-
-    await _performOperationWithRetry(
-          () async {
-        try {
-          await _frame!.sendMessage(_stopListeningFlag, TxCode(value: _stopListeningFlag).pack());
-          _log.info('sent stop listening command for live feed');
-          addLogMessage('sent stop listening command for live feed');
-        } catch (e) {
-          _log.severe('error stopping live feed: $e');
-          addLogMessage('error stopping live feed: $e');
-          rethrow;
-        }
-      },
-      'stop live feed',
-    );
+    await _performOperationWithRetry(() async {
+      final frame = await _getFrame();
+      if (frame == null) {
+        _log.warning('No frame device available to stop live feed');
+        addLogMessage('No frame device available to stop live feed');
+        return;
+      }
+      try {
+        await frame.sendMessage(_stopListeningFlag, TxCode(value: _stopListeningFlag).pack());
+        _log.info('Sent stop listening command for live feed');
+        addLogMessage('Sent stop listening command for live feed');
+      } catch (e) {
+        _log.severe('Error stopping live feed: $e');
+        addLogMessage('Error stopping live feed: $e');
+      }
+    }, 'stopLiveFeed');
   }
 
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _photoController.close();
     _scanSub?.cancel();
     _stateSub?.cancel();
     _rxAppData?.cancel();
@@ -837,6 +773,13 @@ class FrameService extends WidgetsBindingObserver {
   }
 
   BrilliantDevice? get frame => _frame;
+}
+
+// Metadata classes from FeedService
+class TxCode {
+  final int value;
+  TxCode({required this.value});
+  Uint8List pack() => Uint8List.fromList([value]);
 }
 
 abstract class ImageMetadata {
