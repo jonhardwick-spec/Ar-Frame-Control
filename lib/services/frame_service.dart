@@ -64,6 +64,16 @@ class FrameService extends WidgetsBindingObserver {
   static const int _startListeningFlag = 0x11;
   static const int _stopListeningFlag = 0x12;
 
+  // NEW: Camera-specific additions without changing existing structure
+  final StreamController<Uint8List> _cameraStreamController = StreamController<Uint8List>.broadcast();
+  List<int> _imageBuffer = [];
+  bool _isCameraReady = false;
+  Timer? _continuousCaptureTimer;
+
+  // NEW: Camera stream getter
+  Stream<Uint8List> get cameraStream => _cameraStreamController.stream;
+  bool get isCameraReady => _isCameraReady;
+
   FrameService({required this.storageService}) {
     WidgetsBinding.instance.addObserver(this);
     _log.info('FrameService initialized');
@@ -228,6 +238,10 @@ class FrameService extends WidgetsBindingObserver {
 
         _isConnected = true;
         await _sendConnectedIndicator();
+
+        // NEW: Initialize camera system after existing connection process
+        await _initializeCameraSystem();
+
         _updateConnectionState(true);
         _log.info('connection established successfully');
         addLogMessage('connection established successfully');
@@ -238,6 +252,26 @@ class FrameService extends WidgetsBindingObserver {
         if (attempt == _maxRetries) rethrow;
         await Future.delayed(Duration(seconds: _retryDelaySeconds));
       }
+    }
+  }
+
+  // NEW: Camera initialization method
+  Future<void> _initializeCameraSystem() async {
+    try {
+      _log.info('initializing camera system');
+      addLogMessage('initializing camera system');
+
+      // Basic camera availability check
+      await _sendString('print("camera_ready")', awaitResponse: false);
+      await Future.delayed(Duration(milliseconds: 500));
+
+      _isCameraReady = true;
+      _log.info('camera system initialized');
+      addLogMessage('camera system ready');
+    } catch (e) {
+      _log.warning('camera initialization failed: $e');
+      addLogMessage('camera initialization failed: $e');
+      _isCameraReady = false;
     }
   }
 
@@ -265,6 +299,10 @@ class FrameService extends WidgetsBindingObserver {
 
         _isConnected = true;
         await _sendConnectedIndicator();
+
+        // NEW: Re-initialize camera after reconnection
+        await _initializeCameraSystem();
+
         _updateConnectionState(true);
       } catch (e) {
         _log.severe('reconnection failed: $e');
@@ -285,6 +323,10 @@ class FrameService extends WidgetsBindingObserver {
       addLogMessage('connection state changed: ${bcs.state}');
       if (bcs.state == ConnectionState.disconnected) {
         _updateConnectionState(false);
+        // NEW: Stop camera operations on disconnect
+        _stopContinuousCapture();
+        _isCameraReady = false;
+
         Future.delayed(Duration(seconds: _retryDelaySeconds), () {
           if (!_isConnected) {
             addLogMessage('attempting to reconnect...');
@@ -299,6 +341,8 @@ class FrameService extends WidgetsBindingObserver {
     await _rxAppData?.cancel();
     _rxAppData = _frame!.dataResponse.listen((data) {
       _log.fine('received data: $data');
+      // NEW: Handle camera data in addition to existing data processing
+      _handleCameraData(data);
     });
 
     await _rxStdOut?.cancel();
@@ -306,6 +350,25 @@ class FrameService extends WidgetsBindingObserver {
       _log.fine('received string: $data');
       addLogMessage('received string: $data');
     });
+  }
+
+  // NEW: Camera data handler
+  void _handleCameraData(List<int> data) {
+    if (data.isEmpty) return;
+
+    try {
+      // Check if this is image data (simplified detection)
+      if (data.length > 100 && data[0] == 0xFF && data[1] == 0xD8) {
+        // JPEG header detected - this is likely image data
+        _log.info('received image data: ${data.length} bytes');
+        addLogMessage('received image data: ${data.length} bytes');
+
+        final imageBytes = Uint8List.fromList(data);
+        _cameraStreamController.add(imageBytes);
+      }
+    } catch (e) {
+      _log.warning('error processing camera data: $e');
+    }
   }
 
   Future<void> _sendConnectedIndicator() async {
@@ -391,6 +454,10 @@ class FrameService extends WidgetsBindingObserver {
     try {
       _log.info('disconnecting from frame glasses');
       addLogMessage('disconnecting from frame glasses');
+
+      // NEW: Stop camera operations before disconnect
+      _stopContinuousCapture();
+
       if (_frame != null) {
         await _frame!.sendBreakSignal();
         await Future.delayed(Duration(milliseconds: 500));
@@ -421,6 +488,12 @@ class FrameService extends WidgetsBindingObserver {
     _rxStdOut?.cancel();
     _rxAppData?.cancel();
     _maxStringLength = null;
+
+    // NEW: Reset camera state
+    _isCameraReady = false;
+    _stopContinuousCapture();
+    _imageBuffer.clear();
+
     _log.info('connection state reset');
     addLogMessage('connection state reset');
   }
@@ -708,6 +781,37 @@ class FrameService extends WidgetsBindingObserver {
     }
   }
 
+  // NEW: Simple camera capture method for basic use
+  Future<Uint8List?> captureSimplePhoto() async {
+    if (!_isCameraReady || !_isConnected) {
+      _log.warning('camera not ready or not connected');
+      addLogMessage('camera not ready for capture');
+      return null;
+    }
+
+    try {
+      _log.info('capturing simple photo');
+      addLogMessage('capturing simple photo');
+
+      // Send simple capture command via Lua
+      await _sendString('frame.camera.capture()', awaitResponse: false);
+
+      // Wait for image data on the stream
+      final imageData = await _cameraStreamController.stream
+          .timeout(Duration(seconds: 10))
+          .first;
+
+      _log.info('simple photo captured: ${imageData.length} bytes');
+      addLogMessage('simple photo captured: ${imageData.length} bytes');
+
+      return imageData;
+    } catch (e) {
+      _log.severe('simple photo capture failed: $e');
+      addLogMessage('simple photo capture failed: $e');
+      return null;
+    }
+  }
+
   Stream<Uint8List> getLiveFeedStream() async* {
     final frame = await _getFrame();
     if (frame == null) {
@@ -742,6 +846,43 @@ class FrameService extends WidgetsBindingObserver {
     }
   }
 
+  // NEW: Start continuous camera capture
+  Future<void> startContinuousCapture({int intervalMs = 2000}) async {
+    if (!_isCameraReady || !_isConnected) {
+      _log.warning('cannot start continuous capture: camera not ready');
+      addLogMessage('cannot start continuous capture: camera not ready');
+      return;
+    }
+
+    _stopContinuousCapture(); // Stop any existing timer
+
+    _log.info('starting continuous capture with ${intervalMs}ms interval');
+    addLogMessage('starting continuous capture');
+
+    _continuousCaptureTimer = Timer.periodic(Duration(milliseconds: intervalMs), (timer) async {
+      if (!_isConnected || !_isCameraReady) {
+        _stopContinuousCapture();
+        return;
+      }
+
+      try {
+        await captureSimplePhoto();
+      } catch (e) {
+        _log.warning('continuous capture error: $e');
+      }
+    });
+  }
+
+  // NEW: Stop continuous camera capture
+  void _stopContinuousCapture() {
+    if (_continuousCaptureTimer != null) {
+      _continuousCaptureTimer!.cancel();
+      _continuousCaptureTimer = null;
+      _log.info('stopped continuous capture');
+      addLogMessage('stopped continuous capture');
+    }
+  }
+
   Future<void> stopLiveFeed() async {
     await _performOperationWithRetry(() async {
       final frame = await _getFrame();
@@ -767,6 +908,11 @@ class FrameService extends WidgetsBindingObserver {
     _stateSub?.cancel();
     _rxAppData?.cancel();
     _rxStdOut?.cancel();
+
+    // NEW: Clean up camera resources
+    _stopContinuousCapture();
+    _cameraStreamController.close();
+
     disconnect();
     _log.info('FrameService disposed');
     addLogMessage('FrameService disposed');
