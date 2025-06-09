@@ -1,16 +1,11 @@
 # ar_project
 
-Flutter AR App
+This app will allow you to interact with 
+brilliant labs ar frame in multiple ways:
 
-## Getting Started
+- Take photos
+- Send commands/scripts
+- Retrieve list of scripts
+- And more
 
-This project is a starting point for a Flutter application.
-
-A few resources to get you started if this is your first Flutter project:
-
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
-
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+this app is a starting base for a larger project
