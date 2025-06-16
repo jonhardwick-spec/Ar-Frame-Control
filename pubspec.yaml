@@ -23,6 +23,26 @@ dependencies:
   flutter_blue_plus: ^1.35.0
   geolocator: ^14.0.0
 
+  logging: any
+  share_plus: any
+  http: any
+  http_parser: any
+  flutter_foreground_task: any
+  shared_preferences: any
+  archive: any
+  audio_session: any
+  flutter_dotenv: any
+  flutter_riverpod: any
+  noa: any
+  collection: any
+  just_audio: any
+  url_launcher: any
+  webview_flutter: any
+  saver_gallery: any
+  uuid: any
+  geocoding: any
+  google_sign_in: any
+  sign_in_with_apple: any
 assets:
   - assets/lua/
 
@@ -36,5 +56,6 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^5.0.0
 
+  logging: any
 flutter:
   uses-material-design: true
