@@ -3,7 +3,7 @@
 This app will allow you to interact with 
 brilliant labs ar frame in multiple ways:
 
-- Take photos
+- Take photos/video
 - Send commands/scripts
 - Retrieve list of scripts
 - And more
