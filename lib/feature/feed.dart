@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'dart:typed_data';
-import 'dart:convert';
 import 'dart:io';
-import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'dart:collection';
-import 'dart:isolate'; // Import for Isolate communication
+import 'dart:isolate';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:frame_ble/brilliant_device.dart';
@@ -17,8 +16,8 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_quick_video_encoder/flutter_quick_video_encoder.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../utilities/api_call.dart'; // Ensure ApiService is available
-import '../utilities/frame_processing_isolate.dart'; // Import the new isolate file
+import '../utilities/api_call.dart';
+import '../utilities/frame_processing_isolate.dart';
 
 
 final _log = Logger("FeedScreen");
@@ -28,9 +27,9 @@ class FeedScreen extends StatefulWidget {
   final Future<dynamic> Function() capture;
   final bool isProcessing;
   final Function(bool) setProcessing;
-  final String apiEndpoint; // API endpoint from settings
-  final int framesToQueue; // Frames to queue from settings
-  final bool processFramesWithApi; // New setting: control API processing
+  final String apiEndpoint;
+  final int framesToQueue;
+  final bool processFramesWithApi;
 
   const FeedScreen({
     super.key,
@@ -40,7 +39,7 @@ class FeedScreen extends StatefulWidget {
     required this.setProcessing,
     required this.apiEndpoint,
     required this.framesToQueue,
-    required this.processFramesWithApi, // New parameter
+    required this.processFramesWithApi,
   });
 
   @override
@@ -53,7 +52,11 @@ class FeedScreenState extends State<FeedScreen> {
   final FrameMsgRx.RxAutoExpResult _rxAutoExpResult = FrameMsgRx.RxAutoExpResult();
   StreamSubscription<FrameMsgRx.AutoExpResult>? _autoExpResultSubs;
   FrameMsgRx.AutoExpResult? _autoExpResult;
+
+  // Public getter for streaming status
+  bool get isStreaming => _isStreaming;
   bool _isStreaming = false;
+
 
   final List<Uint8List> _capturedFrames = [];
   bool _isEncodingVideo = false;
@@ -62,11 +65,10 @@ class FeedScreenState extends State<FeedScreen> {
   final ListQueue<int> _frameTimestamps = ListQueue<int>();
   int _measuredFps = 10;
 
-  // Isolate related variables
   ReceivePort? _receivePort;
   SendPort? _isolateSendPort;
   Isolate? _frameProcessorIsolate;
-  final List<String> _apiResponseList = []; // To display API responses
+  final List<String> _apiResponseList = [];
 
   @override
   void dispose() {
@@ -75,11 +77,10 @@ class FeedScreenState extends State<FeedScreen> {
       stopStreaming();
     }
     _streamStopwatch.stop();
-    _stopFrameProcessingIsolate(); // Stop the isolate on dispose
+    _stopFrameProcessingIsolate();
     super.dispose();
   }
 
-  // Starts the frame processing isolate
   Future<void> _startFrameProcessingIsolate() async {
     _log.info("Starting frame processing isolate...");
     _receivePort = ReceivePort();
@@ -96,7 +97,7 @@ class FeedScreenState extends State<FeedScreen> {
           data: {
             'apiEndpoint': widget.apiEndpoint,
             'framesToQueue': widget.framesToQueue,
-            'processFramesWithApi': widget.processFramesWithApi, // Pass new setting
+            'processFramesWithApi': widget.processFramesWithApi,
           },
         ));
       } else if (message is IsolateResponse) {
@@ -105,8 +106,8 @@ class FeedScreenState extends State<FeedScreen> {
             _log.info("API response from isolate: ${message.data}");
             if (mounted) {
               setState(() {
-                _apiResponseList.insert(0, message.data); // Add to top
-                if (_apiResponseList.length > 5) { // Keep last 5 responses
+                _apiResponseList.insert(0, message.data);
+                if (_apiResponseList.length > 5) {
                   _apiResponseList.removeLast();
                 }
               });
@@ -130,7 +131,6 @@ class FeedScreenState extends State<FeedScreen> {
     });
   }
 
-  // Stops the frame processing isolate
   void _stopFrameProcessingIsolate() {
     _isolateSendPort?.send(IsolateCommand(IsolateMessageType.stop));
     _receivePort?.close();
@@ -142,7 +142,6 @@ class FeedScreenState extends State<FeedScreen> {
   }
 
 
-  @override
   Future<void> onRun() async {
     if (widget.frame == null) return;
 
@@ -154,35 +153,27 @@ class FeedScreenState extends State<FeedScreen> {
       _log.fine('auto exposure result: $autoExpResult');
     });
 
-    await widget.frame!.sendMessage(0x0a, TxPlainText(text: '2-Tap: start or stop stream').pack());
+    await widget.frame!.sendMessage(0x0a, TxPlainText(text: 'Use the Play button to begin').pack());
 
-    // Update isolate settings whenever onRun is called (e.g., when page switches)
     if (_isolateSendPort != null) {
       _isolateSendPort!.send(IsolateCommand(
         IsolateMessageType.settingsUpdate,
         data: {
           'apiEndpoint': widget.apiEndpoint,
           'framesToQueue': widget.framesToQueue,
-          'processFramesWithApi': widget.processFramesWithApi, // Pass new setting
+          'processFramesWithApi': widget.processFramesWithApi,
         },
       ));
     }
   }
 
-  @override
   Future<void> onCancel() async {
     _autoExpResultSubs?.cancel();
     stopStreaming();
   }
 
   Future<void> handleTap(int taps) async {
-    if (taps == 2) {
-      if (_isStreaming) {
-        stopStreaming();
-      } else {
-        startStreaming();
-      }
-    }
+    // Tap gestures can still be used for other actions if needed
   }
 
   Future<void> startStreaming() async {
@@ -190,7 +181,6 @@ class FeedScreenState extends State<FeedScreen> {
     _log.fine('Start streaming');
     if (!mounted) return;
 
-    // Start the isolate before starting the stream if API processing is enabled
     if (widget.processFramesWithApi) {
       await _startFrameProcessingIsolate();
     }
@@ -203,7 +193,7 @@ class FeedScreenState extends State<FeedScreen> {
     _streamStopwatch.reset();
     _streamStopwatch.start();
     _frameTimestamps.clear();
-    _apiResponseList.clear(); // Clear old responses
+    _apiResponseList.clear();
 
     while (_isStreaming) {
       try {
@@ -232,10 +222,9 @@ class FeedScreenState extends State<FeedScreen> {
       });
       widget.setProcessing(false);
     }
-    _stopFrameProcessingIsolate(); // Stop the isolate when streaming stops (even if not started)
+    _stopFrameProcessingIsolate();
   }
 
-  @override
   Future<void> process((Uint8List, VisionApp.ImageMetadata) photo) async {
     if (!mounted || !_isStreaming) return;
     var imageData = photo.$1;
@@ -244,12 +233,11 @@ class FeedScreenState extends State<FeedScreen> {
       _image = Image.memory(imageData, gaplessPlayback: true);
       _imageMeta = meta;
       _capturedFrames.add(imageData);
-      if (_capturedFrames.length > 300) { // Limit stored frames for video saving
+      if (_capturedFrames.length > 300) {
         _capturedFrames.removeAt(0);
       }
     });
 
-    // Send frame to processing isolate only if API processing is enabled
     if (widget.processFramesWithApi && _isolateSendPort != null) {
       _isolateSendPort!.send(IsolateCommand(IsolateMessageType.processFrame, data: imageData));
     } else if (widget.processFramesWithApi && _isolateSendPort == null) {
@@ -381,13 +369,13 @@ class FeedScreenState extends State<FeedScreen> {
             const Divider(),
             _image ?? const Center(child: Padding(
               padding: EdgeInsets.all(32.0),
-              child: Text("2-Tap to start stream", textAlign: TextAlign.center,),
+              child: Text("Use the play button to start the live stream", textAlign: TextAlign.center,),
             )),
             const Divider(),
             if (_imageMeta != null) VisionApp.ImageMetadataWidget(meta: _imageMeta!),
             const SizedBox(height: 20),
             ElevatedButton.icon(
-              onPressed: _isStreaming && !_isEncodingVideo ? _saveVideo : null,
+              onPressed: isStreaming && !_isEncodingVideo ? _saveVideo : null,
               icon: _isEncodingVideo ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2) : const Icon(Icons.videocam),
               label: Text(_isEncodingVideo ? 'Saving Video...' : 'Save Video'),
               style: ElevatedButton.styleFrom(
@@ -398,7 +386,6 @@ class FeedScreenState extends State<FeedScreen> {
               ),
             ),
             const SizedBox(height: 20),
-            // Display API Responses (only if API processing is enabled)
             if (widget.processFramesWithApi) ...[
               const Text('API Responses (Last 5):', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
@@ -410,7 +397,7 @@ class FeedScreenState extends State<FeedScreen> {
                 ),
                 child: ListView.builder(
                   shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(), // To prevent inner scrolling
+                  physics: const NeverScrollableScrollPhysics(),
                   itemCount: _apiResponseList.length,
                   itemBuilder: (context, index) {
                     return Padding(

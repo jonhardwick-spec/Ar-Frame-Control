@@ -6,11 +6,11 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:logging/logging.dart';
 import 'package:simple_frame_app/frame_vision_app.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // Import SharedPreferences
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'feature/feed.dart';
 import 'feature/picture.dart';
-import 'feature/settings.dart'; // Import the new settings screen
+import 'feature/settings.dart';
 import 'services/foreground_service.dart';
 
 void main() {
@@ -33,25 +33,35 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
 
   final GlobalKey<PictureScreenState> _pictureScreenKey = GlobalKey();
   final GlobalKey<FeedScreenState> _feedScreenKey = GlobalKey();
+  final GlobalKey<SettingsScreenState> _settingsScreenKey = GlobalKey();
+
 
   // Common state
   bool _isProcessing = false;
+  bool _isConnecting = false; // Local state to track connection attempts
 
   // Settings state
   String _apiEndpoint = '';
   int _framesToQueue = 5;
   String _cameraQuality = 'Medium';
-  bool _processFramesWithApi = false; // New setting
+  bool _processFramesWithApi = false;
+
+  // App Bar Titles
+  static const List<String> _appBarTitles = [
+    'Frame Pictures',
+    'Frame Live Feed',
+    'Settings'
+  ];
 
   @override
   void initState() {
     super.initState();
     Logger.root.level = Level.INFO;
     Logger.root.onRecord.listen((record) {
-      debugPrint('${record.level.name}: ${record.time}: ${record.message}');
+      debugPrint('${record.level.name}: ${record.time}: ${record.loggerName}: ${record.message}');
     });
     _loadSettings(); // Load settings on app start
-    tryScanAndConnectAndStart(andRun: true);
+    _connectToDevice(); // Attempt to connect on start
   }
 
   @override
@@ -60,7 +70,6 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
     super.dispose();
   }
 
-  // New method to load settings
   Future<void> _loadSettings() async {
     final prefs = await SharedPreferences.getInstance();
     if (!mounted) return;
@@ -68,7 +77,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
       _apiEndpoint = prefs.getString('api_endpoint') ?? '';
       _framesToQueue = prefs.getInt('frames_to_queue') ?? 5;
       _cameraQuality = prefs.getString('camera_quality') ?? 'Medium';
-      _processFramesWithApi = prefs.getBool('process_frames_with_api') ?? false; // Load the new setting
+      _processFramesWithApi = prefs.getBool('process_frames_with_api') ?? false;
       _log.info("Loaded settings: API Endpoint: $_apiEndpoint, Frames to Queue: $_framesToQueue, Camera Quality: $_cameraQuality, Process with API: $_processFramesWithApi");
     });
   }
@@ -81,11 +90,17 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
 
   @override
   Future<void> onRun() async {
-    // Delegate to the current screen
-    if (_currentIndex == 0) {
-      await _pictureScreenKey.currentState?.onRun();
-    } else {
-      await _feedScreenKey.currentState?.onRun();
+    // Delegate to the current screen, but not for the settings page
+    switch(_currentIndex) {
+      case 0:
+        await _pictureScreenKey.currentState?.onRun();
+        break;
+      case 1:
+        await _feedScreenKey.currentState?.onRun();
+        break;
+      case 2:
+      // No onRun action for settings screen
+        break;
     }
   }
 
@@ -118,6 +133,102 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
     }
   }
 
+  // Helper method to handle connection logic
+  Future<void> _connectToDevice() async {
+    if (_isConnecting || frame != null) return;
+    setState(() {
+      _isConnecting = true;
+    });
+
+    // This method is from the SimpleFrameAppState mixin
+    await tryScanAndConnectAndStart(andRun: true);
+
+    if (mounted) {
+      setState(() {
+        _isConnecting = false;
+      });
+    }
+  }
+
+  // Helper method to handle disconnection logic
+  Future<void> _disconnectFromDevice() async {
+    // The `frame` object comes from the mixin.
+    // The device object itself should have the disconnect method.
+    await frame?.disconnect();
+
+    // The mixin should handle setting frame to null and rebuilding,
+    // but we call setState to ensure the UI updates instantly.
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  /// Builds a single, state-aware button for connection management.
+  Widget _buildConnectButton() {
+    // State 1: Actively trying to connect
+    if (_isConnecting) {
+      return ElevatedButton.icon(
+        onPressed: null, // Disable button
+        icon: const SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
+        label: const Text("Connecting..."),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.amber,
+          foregroundColor: Colors.white,
+        ),
+      );
+    }
+    // State 2: Connected (the `frame` object from the mixin is available)
+    else if (frame != null) {
+      return ElevatedButton.icon(
+        onPressed: _disconnectFromDevice,
+        icon: const Icon(Icons.bluetooth_disabled),
+        label: const Text("Disconnect"),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.redAccent,
+          foregroundColor: Colors.white,
+        ),
+      );
+    }
+    // State 3: Disconnected
+    else {
+      return ElevatedButton.icon(
+        onPressed: _connectToDevice,
+        icon: const Icon(Icons.bluetooth),
+        label: const Text("Connect"),
+        style: ElevatedButton.styleFrom(
+          backgroundColor: Colors.green,
+          foregroundColor: Colors.white,
+        ),
+      );
+    }
+  }
+
+  /// Builds a Floating Action Button for Play/Pause functionality on the Feed screen.
+  Widget? _buildPlayPauseFab() {
+    // Only show the FAB on the Feed screen (index 1)
+    if (_currentIndex != 1) return null;
+
+    final isStreaming = _feedScreenKey.currentState?.isStreaming ?? false;
+
+    return FloatingActionButton(
+      onPressed: () {
+        if (isStreaming) {
+          _feedScreenKey.currentState?.stopStreaming();
+        } else {
+          _feedScreenKey.currentState?.startStreaming();
+        }
+      },
+      backgroundColor: isStreaming ? Colors.redAccent : Colors.teal,
+      child: Icon(
+        isStreaming ? Icons.pause : Icons.play_arrow,
+        color: Colors.white,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     startForegroundService();
@@ -127,45 +238,17 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
         theme: ThemeData.dark(),
         home: Scaffold(
           appBar: AppBar(
-            title: Text(_currentIndex == 0 ? 'Frame Pictures' : 'Frame Live Feed'),
+            title: Text(_appBarTitles[_currentIndex]),
             actions: [getBatteryWidget()],
           ),
-          // Add a Drawer for settings
-          drawer: Drawer(
-            child: ListView(
-              padding: EdgeInsets.zero,
-              children: <Widget>[
-                const DrawerHeader(
-                  decoration: BoxDecoration(
-                    color: Colors.blueGrey,
-                  ),
-                  child: Text(
-                    'Frame App Menu',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 24,
-                    ),
-                  ),
-                ),
-                ListTile(
-                  leading: const Icon(Icons.settings),
-                  title: const Text('Settings'),
-                  onTap: () async {
-                    Navigator.pop(context); // Close the drawer
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(builder: (context) => const SettingsScreen()),
-                    );
-                    _loadSettings(); // Reload settings when returning from SettingsScreen
-                  },
-                ),
-                // You can add more list tiles here for other functionalities
-              ],
-            ),
-          ),
+          drawer: getCameraDrawer(),
           body: PageView(
             controller: _pageController,
             onPageChanged: (index) {
+              // Reload settings when navigating away from the settings page
+              if (_currentIndex == 2 && index != 2) {
+                _loadSettings();
+              }
               setState(() {
                 _currentIndex = index;
               });
@@ -178,7 +261,7 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
                 capture: capture,
                 isProcessing: _isProcessing,
                 setProcessing: _setProcessing,
-                apiEndpoint: _apiEndpoint, // Pass API endpoint
+                apiEndpoint: _apiEndpoint,
               ),
               FeedScreen(
                 key: _feedScreenKey,
@@ -186,9 +269,12 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
                 capture: capture,
                 isProcessing: _isProcessing,
                 setProcessing: _setProcessing,
-                apiEndpoint: _apiEndpoint, // Pass API endpoint
-                framesToQueue: _framesToQueue, // Pass frames to queue setting
-                processFramesWithApi: _processFramesWithApi, // Pass new setting
+                apiEndpoint: _apiEndpoint,
+                framesToQueue: _framesToQueue,
+                processFramesWithApi: _processFramesWithApi,
+              ),
+              SettingsScreen(
+                key: _settingsScreenKey,
               ),
             ],
           ),
@@ -210,13 +296,16 @@ class MainAppState extends State<MainApp> with SimpleFrameAppState, FrameVisionA
                 icon: Icon(Icons.videocam),
                 label: 'Video',
               ),
-            ], // Corrected line: removed the colon after ']'
+              BottomNavigationBarItem(
+                icon: Icon(Icons.settings),
+                label: 'Settings',
+              ),
+            ],
           ),
-          floatingActionButton: getFloatingActionButtonWidget(
-            const Icon(Icons.bluetooth),
-            const Icon(Icons.bluetooth_disabled),
-          ),
-          persistentFooterButtons: getFooterButtonsWidget(),
+          floatingActionButton: _buildPlayPauseFab(),
+          persistentFooterButtons: [
+            Center(child: _buildConnectButton())
+          ],
         ),
       ),
     );

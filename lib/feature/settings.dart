@@ -63,6 +63,7 @@ class SettingsScreenState extends State<SettingsScreen> {
       appBar: AppBar(
         title: const Text('Settings'),
       ),
+
       body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: SingleChildScrollView(
@@ -96,7 +97,6 @@ class SettingsScreenState extends State<SettingsScreen> {
                 keyboardType: TextInputType.number,
               ),
               const SizedBox(height: 20),
-
               // Camera Quality Setting
               const Text('Camera Quality:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
