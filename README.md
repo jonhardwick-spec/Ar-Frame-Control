@@ -8,4 +8,17 @@ brilliant labs ar frame in multiple ways:
 - Retrieve list of scripts
 - And more
 
-this app is a starting base for a larger project
+This app is a large launch base for integration
+of pure computer vision
+
+SOON TO COME FEATURES:
+- AI Integration via choice of selected ai (Deepseek, Gemini, ChatGPT, Qwen, Etc)
+  How will this work:
+   User will chose an ai, questions that appear before them on paper/screen or asked questions
+   of them (audio interception) will be answered, and the response will be displayed on the glasses.
+- Teleprompter:
+  User will put their speech/bs they want to say into a gui, it will get displayed onto the screen
+  
+Code adapted from:
+https://github.com/CitizenOneX/frame_vision_api/tree/main
+https://github.com/CitizenOneX/frame_vision_api/tree/main
