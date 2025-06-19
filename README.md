@@ -19,6 +19,9 @@ SOON TO COME FEATURES:
 - Teleprompter:
   User will put their speech/bs they want to say into a gui, it will get displayed onto the screen
   
+WHATS BROKEN/NOT WORKING RN?!:
+- Unfortunately, saving feed screen video is not working right now, I am working on a fix for this!
+
 Code adapted from:
 https://github.com/CitizenOneX/frame_vision_api/tree/main
 https://github.com/CitizenOneX/frame_vision_api/tree/main
