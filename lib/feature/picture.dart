@@ -5,23 +5,13 @@ import 'package:flutter/material.dart';
 import 'package:frame_ble/brilliant_device.dart';
 import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // Keep for potential future use or if other prefs are loaded here
 import 'package:simple_frame_app/frame_vision_app.dart';
 import 'package:frame_msg/tx/plain_text.dart';
 import 'package:simple_frame_app/simple_frame_app.dart';
 
-import 'dart:async';
-import 'dart:typed_data';
-
-import 'package:flutter/material.dart';
-import 'package:flutter_foreground_task/flutter_foreground_task.dart';
-import 'package:logging/logging.dart';
-import 'package:simple_frame_app/frame_vision_app.dart';
-import 'package:simple_frame_app/simple_frame_app.dart';
-import 'package:frame_msg/tx/plain_text.dart';
-
-import '../api_call.dart';
-import '../text_pagination.dart';
+import '../utilities/api_call.dart';
+import '../utilities/text_pagination.dart';
 
 final _log = Logger("PictureScreen");
 
@@ -30,6 +20,7 @@ class PictureScreen extends StatefulWidget {
   final Future<dynamic> Function() capture;
   final bool isProcessing;
   final Function(bool) setProcessing;
+  final String apiEndpoint; // New parameter for API endpoint
 
   const PictureScreen({
     super.key,
@@ -37,6 +28,7 @@ class PictureScreen extends StatefulWidget {
     required this.capture,
     required this.isProcessing,
     required this.setProcessing,
+    required this.apiEndpoint, // Required
   });
 
   @override
@@ -44,9 +36,6 @@ class PictureScreen extends StatefulWidget {
 }
 
 class PictureScreenState extends State<PictureScreen> {
-  String _apiEndpoint = '';
-  final TextEditingController _apiEndpointTextFieldController = TextEditingController();
-
   Image? _image;
   Uint8List? _imageData;
   ImageMetadata? _imageMeta;
@@ -58,30 +47,16 @@ class PictureScreenState extends State<PictureScreen> {
   @override
   void initState() {
     super.initState();
-    _loadApiEndpoint();
+    // No need to load API endpoint here anymore, it's passed via widget.apiEndpoint
   }
 
   @override
   void dispose() {
-    _apiEndpointTextFieldController.dispose();
     _clearTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _loadApiEndpoint() async {
-    final prefs = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _apiEndpoint = prefs.getString('api_endpoint') ?? '';
-      _apiEndpointTextFieldController.text = _apiEndpoint;
-    });
-  }
-
-  Future<void> _saveApiEndpoint() async {
-    _apiEndpoint = _apiEndpointTextFieldController.text;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('api_endpoint', _apiEndpoint);
-  }
+  // Removed _loadApiEndpoint and _saveApiEndpoint as they are handled in SettingsScreen
 
   Future<void> onRun() async {
     if (widget.frame == null) return;
@@ -155,7 +130,8 @@ class PictureScreenState extends State<PictureScreen> {
         _responseTextList.clear();
       });
 
-      final apiService = ApiService(endpointUrl: _apiEndpoint);
+      // Use the API endpoint from widget
+      final apiService = ApiService(endpointUrl: widget.apiEndpoint);
       if (widget.frame != null) {
         await widget.frame!.sendMessage(0x0a,
             TxPlainText(text: '\u{F0003}', x: 285, y: 1, paletteOffset: 8).pack() // 3d shades emoji
@@ -221,22 +197,7 @@ class PictureScreenState extends State<PictureScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8.0),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _apiEndpointTextFieldController,
-                  decoration: const InputDecoration(
-                    hintText: 'E.g. http://192.168.0.5:8000/process',
-                  ),
-                ),
-              ),
-              ElevatedButton(onPressed: _saveApiEndpoint, child: const Text('Save')),
-            ],
-          ),
-        ),
+        // Removed API endpoint TextField and Save button
         Expanded(
           child: GestureDetector(
             onTap: () => _shareImage(_imageData, _responseTextList.join('\n')),
