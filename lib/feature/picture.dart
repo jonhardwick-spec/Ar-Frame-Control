@@ -5,10 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:frame_ble/brilliant_device.dart';
 import 'package:logging/logging.dart';
 import 'package:share_plus/share_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart'; // Keep for potential future use or if other prefs are loaded here
 import 'package:simple_frame_app/frame_vision_app.dart';
 import 'package:frame_msg/tx/plain_text.dart';
-import 'package:simple_frame_app/simple_frame_app.dart';
 
 import '../utilities/api_call.dart';
 import '../utilities/text_pagination.dart';
@@ -20,7 +18,7 @@ class PictureScreen extends StatefulWidget {
   final Future<dynamic> Function() capture;
   final bool isProcessing;
   final Function(bool) setProcessing;
-  final String apiEndpoint; // New parameter for API endpoint
+  final String apiEndpoint;
 
   const PictureScreen({
     super.key,
@@ -28,7 +26,7 @@ class PictureScreen extends StatefulWidget {
     required this.capture,
     required this.isProcessing,
     required this.setProcessing,
-    required this.apiEndpoint, // Required
+    required this.apiEndpoint,
   });
 
   @override
@@ -47,7 +45,6 @@ class PictureScreenState extends State<PictureScreen> {
   @override
   void initState() {
     super.initState();
-    // No need to load API endpoint here anymore, it's passed via widget.apiEndpoint
   }
 
   @override
@@ -55,8 +52,6 @@ class PictureScreenState extends State<PictureScreen> {
     _clearTimer?.cancel();
     super.dispose();
   }
-
-  // Removed _loadApiEndpoint and _saveApiEndpoint as they are handled in SettingsScreen
 
   Future<void> onRun() async {
     if (widget.frame == null) return;
@@ -97,7 +92,7 @@ class PictureScreenState extends State<PictureScreen> {
         );
         setState((){});
         break;
-      case 3: // Take Photo
+      case 3: // Take Photo - THIS IS THE KEY PART
         widget.setProcessing(true);
         _clearTimer?.cancel();
         _clearTimer = null;
@@ -107,7 +102,9 @@ class PictureScreenState extends State<PictureScreen> {
         );
 
         try {
+          // CAPTURE THE PHOTO HERE
           var photo = await widget.capture();
+          // PROCESS IT DIRECTLY
           await process(photo);
         } catch (e) {
           _log.severe("Error capturing photo: $e");
@@ -130,16 +127,20 @@ class PictureScreenState extends State<PictureScreen> {
         _responseTextList.clear();
       });
 
-      // Use the API endpoint from widget
-      final apiService = ApiService(endpointUrl: widget.apiEndpoint);
-      if (widget.frame != null) {
-        await widget.frame!.sendMessage(0x0a,
-            TxPlainText(text: '\u{F0003}', x: 285, y: 1, paletteOffset: 8).pack() // 3d shades emoji
-        );
-      }
+      // Only process with API if endpoint is set
+      if (widget.apiEndpoint.isNotEmpty) {
+        final apiService = ApiService(endpointUrl: widget.apiEndpoint);
+        if (widget.frame != null) {
+          await widget.frame!.sendMessage(0x0a,
+              TxPlainText(text: '\u{F0003}', x: 285, y: 1, paletteOffset: 8).pack() // 3d shades emoji
+          );
+        }
 
-      final response = await apiService.processImage(imageBytes: imageData);
-      await _handleResponseText(response);
+        final response = await apiService.processImage(imageBytes: imageData);
+        await _handleResponseText(response);
+      } else {
+        await _handleResponseText("Photo captured successfully!");
+      }
 
     } catch (e) {
       String err = 'Error: $e';
@@ -197,7 +198,6 @@ class PictureScreenState extends State<PictureScreen> {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Removed API endpoint TextField and Save button
         Expanded(
           child: GestureDetector(
             onTap: () => _shareImage(_imageData, _responseTextList.join('\n')),

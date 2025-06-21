@@ -10,15 +10,12 @@ import 'package:frame_ble/brilliant_device.dart';
 import 'package:frame_msg/rx/auto_exp_result.dart' as FrameMsgRx;
 import 'package:logging/logging.dart';
 import 'package:simple_frame_app/frame_vision_app.dart' as VisionApp;
-import 'package:simple_frame_app/simple_frame_app.dart';
 import 'package:frame_msg/tx/plain_text.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter_quick_video_encoder/flutter_quick_video_encoder.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../utilities/api_call.dart';
 import '../utilities/frame_processing_isolate.dart';
-
 
 final _log = Logger("FeedScreen");
 
@@ -56,7 +53,6 @@ class FeedScreenState extends State<FeedScreen> {
   // Public getter for streaming status
   bool get isStreaming => _isStreaming;
   bool _isStreaming = false;
-
 
   final List<Uint8List> _capturedFrames = [];
   bool _isEncodingVideo = false;
@@ -141,7 +137,6 @@ class FeedScreenState extends State<FeedScreen> {
     _log.info("Frame processing isolate stopped.");
   }
 
-
   Future<void> onRun() async {
     if (widget.frame == null) return;
 
@@ -153,7 +148,7 @@ class FeedScreenState extends State<FeedScreen> {
       _log.fine('auto exposure result: $autoExpResult');
     });
 
-    await widget.frame!.sendMessage(0x0a, TxPlainText(text: 'Use the Play button to begin').pack());
+    await widget.frame!.sendMessage(0x0a, TxPlainText(text: '2-Tap: start or stop stream').pack());
 
     if (_isolateSendPort != null) {
       _isolateSendPort!.send(IsolateCommand(
@@ -173,7 +168,13 @@ class FeedScreenState extends State<FeedScreen> {
   }
 
   Future<void> handleTap(int taps) async {
-    // Tap gestures can still be used for other actions if needed
+    if (taps == 2) {
+      if (_isStreaming) {
+        stopStreaming();
+      } else {
+        startStreaming();
+      }
+    }
   }
 
   Future<void> startStreaming() async {
@@ -184,7 +185,6 @@ class FeedScreenState extends State<FeedScreen> {
     if (widget.processFramesWithApi) {
       await _startFrameProcessingIsolate();
     }
-
 
     setState(() {
       _isStreaming = true;
@@ -357,7 +357,6 @@ class FeedScreenState extends State<FeedScreen> {
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
@@ -369,13 +368,13 @@ class FeedScreenState extends State<FeedScreen> {
             const Divider(),
             _image ?? const Center(child: Padding(
               padding: EdgeInsets.all(32.0),
-              child: Text("Use the play button to start the live stream", textAlign: TextAlign.center,),
+              child: Text("2-Tap to start stream", textAlign: TextAlign.center,),
             )),
             const Divider(),
             if (_imageMeta != null) VisionApp.ImageMetadataWidget(meta: _imageMeta!),
             const SizedBox(height: 20),
             ElevatedButton.icon(
-              onPressed: isStreaming && !_isEncodingVideo ? _saveVideo : null,
+              onPressed: _isStreaming && !_isEncodingVideo ? _saveVideo : null,
               icon: _isEncodingVideo ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2) : const Icon(Icons.videocam),
               label: Text(_isEncodingVideo ? 'Saving Video...' : 'Save Video'),
               style: ElevatedButton.styleFrom(
