@@ -107,6 +107,9 @@ class FeedScreenState extends State<FeedScreen> {
                   _apiResponseList.removeLast();
                 }
               });
+
+              // Send wrapped response to Frame display
+              _sendResponseToFrame(message.data);
             }
             break;
           case IsolateMessageType.error:
@@ -118,6 +121,9 @@ class FeedScreenState extends State<FeedScreen> {
                   _apiResponseList.removeLast();
                 }
               });
+
+              // Send error to Frame display
+              _sendResponseToFrame('Error: ${message.data}');
             }
             break;
           default:
@@ -223,6 +229,11 @@ class FeedScreenState extends State<FeedScreen> {
       widget.setProcessing(false);
     }
     _stopFrameProcessingIsolate();
+
+    // Clear Frame display when stopping
+    if (widget.frame != null) {
+      widget.frame!.sendMessage(0x0a, TxPlainText(text: ' ').pack());
+    }
   }
 
   Future<void> process((Uint8List, VisionApp.ImageMetadata) photo) async {
@@ -265,6 +276,61 @@ class FeedScreenState extends State<FeedScreen> {
           });
         }
       }
+    }
+  }
+
+  // Helper method to wrap text by characters
+  List<String> _wrapTextByCharacters(String text, int maxCharsPerLine) {
+    if (text.isEmpty) return [''];
+
+    List<String> lines = [];
+    List<String> words = text.split(' ');
+    String currentLine = '';
+
+    for (String word in words) {
+      if (currentLine.isEmpty) {
+        currentLine = word;
+      } else if ((currentLine.length + 1 + word.length) <= maxCharsPerLine) {
+        currentLine += ' $word';
+      } else {
+        lines.add(currentLine);
+        currentLine = word;
+      }
+    }
+
+    if (currentLine.isNotEmpty) {
+      lines.add(currentLine);
+    }
+
+    return lines;
+  }
+
+  // New method to send responses to the Frame
+  Future<void> _sendResponseToFrame(String text) async {
+    if (widget.frame == null || !_isStreaming) return;
+
+    // Split the text into lines
+    List<String> splitText = text.split('\n');
+
+    // Wrap each line to fit within 24 characters
+    List<String> wrappedLines = [];
+    for (String line in splitText) {
+      wrappedLines.addAll(_wrapTextByCharacters(line, 24));
+    }
+
+    // Take only the first 5 lines to avoid overwhelming the display
+    if (wrappedLines.length > 5) {
+      wrappedLines = wrappedLines.take(5).toList();
+      wrappedLines.add('...');
+    }
+
+    try {
+      // Send wrapped text to Frame display
+      await widget.frame!.sendMessage(0x0a,
+          TxPlainText(text: wrappedLines.join('\n')).pack()
+      );
+    } catch (e) {
+      _log.warning("Failed to send response to Frame: $e");
     }
   }
 
