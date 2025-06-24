@@ -15,7 +15,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter_quick_video_encoder/flutter_quick_video_encoder.dart';
 import 'package:share_plus/share_plus.dart';
 
-import '../utilities/frame_processing_isolate.dart';
+import '../services/api_response_manager.dart'; // NEW
 
 final _log = Logger("FeedScreen");
 
@@ -61,86 +61,67 @@ class FeedScreenState extends State<FeedScreen> {
   final ListQueue<int> _frameTimestamps = ListQueue<int>();
   int _measuredFps = 10;
 
-  ReceivePort? _receivePort;
-  SendPort? _isolateSendPort;
-  Isolate? _frameProcessorIsolate;
+  // NEW: API Response Manager integration
+  final ApiResponseManager _apiManager = ApiResponseManager();
+  StreamSubscription<String>? _debugSubscription;
+  StreamSubscription<ApiResponse>? _responseSubscription;
+  final List<String> _debugMessages = [];
   final List<String> _apiResponseList = [];
+
+  // NEW: AI Response waiting
+  bool _waitingForAiResponse = false;
+  bool _awaitAiResponseEnabled = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _initializeApiManager();
+  }
 
   @override
   void dispose() {
     _autoExpResultSubs?.cancel();
+    _debugSubscription?.cancel();
+    _responseSubscription?.cancel();
     if (_isStreaming) {
       stopStreaming();
     }
     _streamStopwatch.stop();
-    _stopFrameProcessingIsolate();
     super.dispose();
   }
 
-  Future<void> _startFrameProcessingIsolate() async {
-    _log.info("Starting frame processing isolate...");
-    _receivePort = ReceivePort();
-    _frameProcessorIsolate = await Isolate.spawn(
-      frameProcessingEntryPoint,
-      _receivePort!.sendPort,
-    );
+  Future<void> _initializeApiManager() async {
+    await _apiManager.initialize();
 
-    _receivePort!.listen((dynamic message) {
-      if (message is SendPort) {
-        _isolateSendPort = message;
-        _isolateSendPort!.send(IsolateCommand(
-          IsolateMessageType.settingsUpdate,
-          data: {
-            'apiEndpoint': widget.apiEndpoint,
-            'framesToQueue': widget.framesToQueue,
-            'processFramesWithApi': widget.processFramesWithApi,
-          },
-        ));
-      } else if (message is IsolateResponse) {
-        switch (message.type) {
-          case IsolateMessageType.result:
-            _log.info("API response from isolate: ${message.data}");
-            if (mounted) {
-              setState(() {
-                _apiResponseList.insert(0, message.data);
-                if (_apiResponseList.length > 5) {
-                  _apiResponseList.removeLast();
-                }
-              });
-
-              // Send wrapped response to Frame display
-              _sendResponseToFrame(message.data);
-            }
-            break;
-          case IsolateMessageType.error:
-            _log.severe("Error from isolate: ${message.data}");
-            if (mounted) {
-              setState(() {
-                _apiResponseList.insert(0, 'Isolate Error: ${message.data}');
-                if (_apiResponseList.length > 5) {
-                  _apiResponseList.removeLast();
-                }
-              });
-
-              // Send error to Frame display
-              _sendResponseToFrame('Error: ${message.data}');
-            }
-            break;
-          default:
-            _log.warning("Unknown response type from isolate: ${message.type}");
-        }
+    // Listen to debug messages
+    _debugSubscription = _apiManager.debugStream.listen((message) {
+      if (mounted) {
+        setState(() {
+          _debugMessages.insert(0, message);
+          if (_debugMessages.length > 50) {
+            _debugMessages.removeLast();
+          }
+        });
       }
     });
-  }
 
-  void _stopFrameProcessingIsolate() {
-    _isolateSendPort?.send(IsolateCommand(IsolateMessageType.stop));
-    _receivePort?.close();
-    _frameProcessorIsolate?.kill(priority: Isolate.immediate);
-    _frameProcessorIsolate = null;
-    _receivePort = null;
-    _isolateSendPort = null;
-    _log.info("Frame processing isolate stopped.");
+    // Listen to API responses
+    _responseSubscription = _apiManager.responseStream.listen((response) {
+      if (mounted && response.success) {
+        setState(() {
+          _apiResponseList.insert(0, response.answer);
+          if (_apiResponseList.length > 5) {
+            _apiResponseList.removeLast();
+          }
+        });
+
+        // Send response to Frame display
+        _sendResponseToFrame(response.answer);
+
+        // Reset waiting state
+        _waitingForAiResponse = false;
+      }
+    });
   }
 
   Future<void> onRun() async {
@@ -156,16 +137,8 @@ class FeedScreenState extends State<FeedScreen> {
 
     await widget.frame!.sendMessage(0x0a, TxPlainText(text: '2-Tap: start or stop stream').pack());
 
-    if (_isolateSendPort != null) {
-      _isolateSendPort!.send(IsolateCommand(
-        IsolateMessageType.settingsUpdate,
-        data: {
-          'apiEndpoint': widget.apiEndpoint,
-          'framesToQueue': widget.framesToQueue,
-          'processFramesWithApi': widget.processFramesWithApi,
-        },
-      ));
-    }
+    // Check server health
+    await _apiManager.checkServerHealth();
   }
 
   Future<void> onCancel() async {
@@ -188,8 +161,18 @@ class FeedScreenState extends State<FeedScreen> {
     _log.fine('Start streaming');
     if (!mounted) return;
 
+    // Authenticate and update profile if processing with API
     if (widget.processFramesWithApi) {
-      await _startFrameProcessingIsolate();
+      final authSuccess = await _apiManager.authenticate();
+      if (!authSuccess) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Failed to authenticate with server'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
     }
 
     setState(() {
@@ -200,6 +183,7 @@ class FeedScreenState extends State<FeedScreen> {
     _streamStopwatch.start();
     _frameTimestamps.clear();
     _apiResponseList.clear();
+    _debugMessages.clear();
 
     while (_isStreaming) {
       try {
@@ -207,8 +191,21 @@ class FeedScreenState extends State<FeedScreen> {
           stopStreaming();
           break;
         }
+
+        // NEW: Wait for AI response before capturing next frame if enabled
+        if (_awaitAiResponseEnabled && _waitingForAiResponse) {
+          await Future.delayed(const Duration(milliseconds: 100));
+          continue;
+        }
+
         var photo = await widget.capture();
         await process(photo);
+
+        // NEW: If we're processing with API and awaiting responses, set waiting flag
+        if (widget.processFramesWithApi && _awaitAiResponseEnabled) {
+          _waitingForAiResponse = true;
+        }
+
       } catch (e) {
         _log.severe('Error during streaming capture: $e');
         if(mounted){
@@ -225,10 +222,10 @@ class FeedScreenState extends State<FeedScreen> {
     if (mounted) {
       setState(() {
         _isStreaming = false;
+        _waitingForAiResponse = false;
       });
       widget.setProcessing(false);
     }
-    _stopFrameProcessingIsolate();
 
     // Clear Frame display when stopping
     if (widget.frame != null) {
@@ -249,14 +246,17 @@ class FeedScreenState extends State<FeedScreen> {
       }
     });
 
-    if (widget.processFramesWithApi && _isolateSendPort != null) {
-      _isolateSendPort!.send(IsolateCommand(IsolateMessageType.processFrame, data: imageData));
-    } else if (widget.processFramesWithApi && _isolateSendPort == null) {
-      _log.warning("Isolate SendPort is null despite API processing being enabled. Frame not sent for processing.");
-    } else {
-      _log.fine("API processing disabled. Frame not sent for processing.");
+    // NEW: Process with API Response Manager
+    if (widget.processFramesWithApi && !_apiManager.isProcessing) {
+      // Process in background, don't await if not waiting for responses
+      if (_awaitAiResponseEnabled) {
+        await _apiManager.processImage(imageData);
+      } else {
+        _apiManager.processImage(imageData); // Fire and forget
+      }
     }
 
+    // Update FPS calculation
     if (_streamStopwatch.isRunning) {
       _frameTimestamps.addLast(_streamStopwatch.elapsedMilliseconds);
       if (_frameTimestamps.length > 30) {
@@ -305,7 +305,7 @@ class FeedScreenState extends State<FeedScreen> {
     return lines;
   }
 
-  // New method to send responses to the Frame
+  // Send responses to the Frame
   Future<void> _sendResponseToFrame(String text) async {
     if (widget.frame == null || !_isStreaming) return;
 
@@ -432,6 +432,43 @@ class FeedScreenState extends State<FeedScreen> {
           children: [
             if (_autoExpResult != null) AutoExpResultWidget(result: _autoExpResult!),
             const Divider(),
+
+            // NEW: AI Response Control
+            if (widget.processFramesWithApi) ...[
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(12.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.smart_toy, color: Colors.blue),
+                          const SizedBox(width: 8),
+                          Text('AI Response Control', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      SwitchListTile(
+                        title: const Text('Await AI Response'),
+                        subtitle: const Text('Wait for AI to respond before capturing next frame'),
+                        value: _awaitAiResponseEnabled,
+                        onChanged: (value) {
+                          setState(() {
+                            _awaitAiResponseEnabled = value;
+                          });
+                        },
+                        secondary: Icon(_waitingForAiResponse ? Icons.hourglass_empty : Icons.check_circle),
+                      ),
+                      if (_waitingForAiResponse)
+                        const LinearProgressIndicator(),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
             _image ?? const Center(child: Padding(
               padding: EdgeInsets.all(32.0),
               child: Text("2-Tap to start stream", textAlign: TextAlign.center,),
@@ -439,20 +476,84 @@ class FeedScreenState extends State<FeedScreen> {
             const Divider(),
             if (_imageMeta != null) VisionApp.ImageMetadataWidget(meta: _imageMeta!),
             const SizedBox(height: 20),
-            ElevatedButton.icon(
-              onPressed: _isStreaming && !_isEncodingVideo ? _saveVideo : null,
-              icon: _isEncodingVideo ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2) : const Icon(Icons.videocam),
-              label: Text(_isEncodingVideo ? 'Saving Video...' : 'Save Video'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.teal,
-                foregroundColor: Colors.white,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-              ),
+
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isStreaming && !_isEncodingVideo ? _saveVideo : null,
+                    icon: _isEncodingVideo ? const CircularProgressIndicator(color: Colors.white, strokeWidth: 2) : const Icon(Icons.videocam),
+                    label: Text(_isEncodingVideo ? 'Saving Video...' : 'Save Video'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.teal,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton.icon(
+                  onPressed: () => _apiManager.checkServerHealth(),
+                  icon: const Icon(Icons.health_and_safety),
+                  label: const Text('Health'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 20),
+
             if (widget.processFramesWithApi) ...[
-              const Text('API Responses (Last 5):', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              // NEW: Debug Messages Panel
+              Card(
+                child: ExpansionTile(
+                  title: Row(
+                    children: [
+                      Icon(Icons.bug_report, color: Colors.green),
+                      const SizedBox(width: 8),
+                      Text('Server Debug Messages (${_debugMessages.length})'),
+                    ],
+                  ),
+                  children: [
+                    Container(
+                      height: 200,
+                      padding: const EdgeInsets.all(8.0),
+                      child: _debugMessages.isEmpty
+                          ? const Center(child: Text('No debug messages yet'))
+                          : ListView.builder(
+                        itemCount: _debugMessages.length,
+                        itemBuilder: (context, index) {
+                          final message = _debugMessages[index];
+                          Color textColor = Colors.white;
+                          if (message.contains('✅')) textColor = Colors.green;
+                          else if (message.contains('❌')) textColor = Colors.red;
+                          else if (message.contains('⚠️')) textColor = Colors.orange;
+                          else if (message.contains('🤖')) textColor = Colors.blue;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2.0),
+                            child: Text(
+                              message,
+                              style: TextStyle(
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                                color: textColor,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              const Text('AI Responses (Last 5):', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
               const SizedBox(height: 8),
               Container(
                 padding: const EdgeInsets.all(8.0),

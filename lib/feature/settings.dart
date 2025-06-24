@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 
+import '../services/api_response_manager.dart';
 final _log = Logger("SettingsScreen");
 
 class SettingsScreen extends StatefulWidget {
@@ -14,8 +17,22 @@ class SettingsScreen extends StatefulWidget {
 class SettingsScreenState extends State<SettingsScreen> {
   final TextEditingController _apiEndpointController = TextEditingController();
   final TextEditingController _framesToQueueController = TextEditingController();
+
+  // API-related controllers
+  final TextEditingController _apiUsernameController = TextEditingController();
+  final TextEditingController _apiAuthKeyController = TextEditingController();
+  final TextEditingController _deepSeekApiKeyController = TextEditingController();
+  final TextEditingController _qwenApiKeyController = TextEditingController();
+  final TextEditingController _geminiApiKeyController = TextEditingController();
+  final TextEditingController _chatGptApiKeyController = TextEditingController();
+
+  // NEW: Custom prompt controller
+  final TextEditingController _customPromptController = TextEditingController();
+  final ApiResponseManager _apiManager = ApiResponseManager();
+
   String _selectedCameraQuality = 'Medium';
   bool _processFramesWithApi = false;
+  bool _isUpdatingPrompt = false; // Loading state for prompt update
 
   int _qualityIndex = 2;
   final List<String> _qualityValues = ['VERY_LOW', 'LOW', 'MEDIUM', 'HIGH', 'VERY_HIGH'];
@@ -48,6 +65,13 @@ class SettingsScreenState extends State<SettingsScreen> {
   void dispose() {
     _apiEndpointController.dispose();
     _framesToQueueController.dispose();
+    _apiUsernameController.dispose();
+    _apiAuthKeyController.dispose();
+    _deepSeekApiKeyController.dispose();
+    _qwenApiKeyController.dispose();
+    _geminiApiKeyController.dispose();
+    _chatGptApiKeyController.dispose();
+    _customPromptController.dispose(); // NEW
     super.dispose();
   }
 
@@ -57,6 +81,18 @@ class SettingsScreenState extends State<SettingsScreen> {
     setState(() {
       _apiEndpointController.text = prefs.getString('api_endpoint') ?? '';
       _framesToQueueController.text = (prefs.getInt('frames_to_queue') ?? 5).toString();
+
+      // Load API settings
+      _apiUsernameController.text = prefs.getString('api_username') ?? '';
+      _apiAuthKeyController.text = prefs.getString('api_auth_key') ?? '';
+      _deepSeekApiKeyController.text = prefs.getString('deepseek_api_key') ?? '';
+      _qwenApiKeyController.text = prefs.getString('qwen_api_key') ?? '';
+      _geminiApiKeyController.text = prefs.getString('gemini_api_key') ?? '';
+      _chatGptApiKeyController.text = prefs.getString('chatgpt_api_key') ?? '';
+
+      // NEW: Load custom prompt
+      _customPromptController.text = prefs.getString('custom_prompt') ?? 'Describe this image in detail, if it has words in another language besides english translate it back to english and provide me with the result in the format "Translated Text: xyz", if it contains a math problem or word problem provide me with the result in the format "Problem: xyz"';
+
       _selectedCameraQuality = prefs.getString('camera_quality') ?? 'Medium';
       _processFramesWithApi = prefs.getBool('process_frames_with_api') ?? false;
 
@@ -88,6 +124,18 @@ class SettingsScreenState extends State<SettingsScreen> {
 
     await prefs.setString('api_endpoint', _apiEndpointController.text);
     await prefs.setInt('frames_to_queue', int.tryParse(_framesToQueueController.text) ?? 5);
+
+    // Save API settings
+    await prefs.setString('api_username', _apiUsernameController.text);
+    await prefs.setString('api_auth_key', _apiAuthKeyController.text);
+    await prefs.setString('deepseek_api_key', _deepSeekApiKeyController.text);
+    await prefs.setString('qwen_api_key', _qwenApiKeyController.text);
+    await prefs.setString('gemini_api_key', _geminiApiKeyController.text);
+    await prefs.setString('chatgpt_api_key', _chatGptApiKeyController.text);
+
+    // NEW: Save custom prompt
+    await prefs.setString('custom_prompt', _customPromptController.text);
+
     await prefs.setString('camera_quality', _selectedCameraQuality);
     await prefs.setBool('process_frames_with_api', _processFramesWithApi);
 
@@ -114,10 +162,58 @@ class SettingsScreenState extends State<SettingsScreen> {
     await prefs.setBool('camera_settings_changed', true);
 
     _log.info("All settings saved successfully");
+
+    // NEW: Update prompt on server after saving locally
+    await _updatePromptOnServer();
+
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Settings saved!')),
       );
+    }
+  }
+
+  // NEW: Update prompt on server
+  Future<void> _updatePromptOnServer() async {
+    final customPrompt = _customPromptController.text.trim();
+
+    if (customPrompt.isEmpty) {
+      _log.warning("Custom prompt empty, skipping server update");
+      return;
+    }
+
+    setState(() {
+      _isUpdatingPrompt = true;
+    });
+
+    try {
+      await _apiManager.initialize();
+      final success = await _apiManager.updatePrompt(customPrompt);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(success ? 'Custom prompt updated on server!' : 'Failed to update prompt'),
+            backgroundColor: success ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    } catch (e) {
+      _log.severe("Error updating prompt on server: $e");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error updating prompt: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isUpdatingPrompt = false;
+        });
+      }
     }
   }
 
@@ -208,18 +304,165 @@ class SettingsScreenState extends State<SettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildSectionHeader('API Configuration'),
+            _buildSectionHeader('Server Configuration'),
             TextField(
               controller: _apiEndpointController,
               decoration: const InputDecoration(
                 labelText: 'API Endpoint',
-                hintText: 'e.g. http://192.168.0.5:8000/process',
+                hintText: 'e.g. http://192.168.0.5:7175',
                 border: OutlineInputBorder(),
                 contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
               ),
               keyboardType: TextInputType.url,
             ),
             const SizedBox(height: 16),
+            TextField(
+              controller: _apiUsernameController,
+              decoration: const InputDecoration(
+                labelText: 'API Username',
+                hintText: 'Your username for the server',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _apiAuthKeyController,
+              decoration: const InputDecoration(
+                labelText: 'API Authentication Key',
+                hintText: 'Authentication key for server access',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+              obscureText: true,
+            ),
+
+            _buildSectionHeader('AI Configuration'),
+
+            // NEW: Custom Prompt Field
+            TextField(
+              controller: _customPromptController,
+              maxLines: 3,
+              decoration: InputDecoration(
+                labelText: 'Custom AI Prompt',
+                hintText: 'e.g. "Analyze this image for cooking ingredients and suggest a recipe"',
+                helperText: 'This prompt will be sent to the AI services when processing images',
+                border: const OutlineInputBorder(),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                suffixIcon: _isUpdatingPrompt
+                    ? const Padding(
+                  padding: EdgeInsets.all(12.0),
+                  child: SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+                    : IconButton(
+                  icon: const Icon(Icons.cloud_upload),
+                  onPressed: _updatePromptOnServer,
+                  tooltip: 'Update prompt on server',
+                ),
+              ),
+              onChanged: (value) {
+                // Auto-save locally when user types (with debouncing would be better)
+                SharedPreferences.getInstance().then((prefs) {
+                  prefs.setString('custom_prompt', value);
+                });
+              },
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: _isUpdatingPrompt ? null : _updatePromptOnServer,
+                    icon: _isUpdatingPrompt
+                        ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                        : const Icon(Icons.sync),
+                    label: Text(_isUpdatingPrompt ? 'Updating...' : 'Update Prompt on Server'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.teal,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                ElevatedButton(
+                  onPressed: () {
+                    _customPromptController.text = 'Describe this image in detail';
+                    SharedPreferences.getInstance().then((prefs) {
+                      prefs.setString('custom_prompt', 'Describe this image in detail');
+                    });
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.grey.shade600,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: const Text('Reset'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+
+            _buildSectionHeader('AI API Keys'),
+            TextField(
+              controller: _deepSeekApiKeyController,
+              decoration: const InputDecoration(
+                labelText: 'DeepSeek API Key',
+                hintText: 'Your DeepSeek API key',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _qwenApiKeyController,
+              decoration: const InputDecoration(
+                labelText: 'Qwen API Key',
+                hintText: 'Your Qwen API key',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _geminiApiKeyController,
+              decoration: const InputDecoration(
+                labelText: 'Gemini API Key',
+                hintText: 'Your Google Gemini API key',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+              obscureText: true,
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _chatGptApiKeyController,
+              decoration: const InputDecoration(
+                labelText: 'ChatGPT API Key',
+                hintText: 'Your OpenAI ChatGPT API key',
+                border: OutlineInputBorder(),
+                contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              ),
+              keyboardType: TextInputType.text,
+              obscureText: true,
+            ),
+
+            _buildSectionHeader('Processing Configuration'),
             TextField(
               controller: _framesToQueueController,
               decoration: const InputDecoration(
@@ -265,6 +508,7 @@ class SettingsScreenState extends State<SettingsScreen> {
               secondary: const Icon(Icons.cloud_upload),
             ),
 
+            // Rest of the camera settings remain the same...
             _buildSectionHeader('Camera Settings'),
             _buildIntSliderTile(
               title: 'Quality',
@@ -529,6 +773,13 @@ class SettingsScreenState extends State<SettingsScreen> {
               setState(() {
                 _apiEndpointController.text = '';
                 _framesToQueueController.text = '5';
+                _apiUsernameController.text = '';
+                _apiAuthKeyController.text = '';
+                _deepSeekApiKeyController.text = '';
+                _qwenApiKeyController.text = '';
+                _geminiApiKeyController.text = '';
+                _chatGptApiKeyController.text = '';
+                _customPromptController.text = 'Describe this image in detail'; // NEW: Reset prompt
                 _selectedCameraQuality = 'Medium';
                 _processFramesWithApi = false;
 
